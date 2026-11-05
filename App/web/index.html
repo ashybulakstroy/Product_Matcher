@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f5f7fb">
+  <link rel="icon" href="data:,">
+  <title>Ашыбулак строй · подготовка счёта на оплату</title>
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/ocr_activity.css">
+  <link rel="stylesheet" href="/editing.css">
+  <link rel="stylesheet" href="/invoice.css">
+  <script src="/ocr_activity.js" defer></script>
+  <script src="/app.js" defer></script>
+  <script src="/invoice.js" defer></script>
+  <script src="/matching_compare.js" defer></script>
+  <link rel="stylesheet" href="/matching_compare.css">
+</head>
+<body class="awaiting-receipt">
+<svg class="sprite" aria-hidden="true"><defs>
+  <symbol id="i-upload" viewBox="0 0 24 24"><path d="M12 16V4m-4 4 4-4 4 4M4 16v4h16v-4"/></symbol>
+  <symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="m3 17 6-6 4 4 3-3 5 5"/><circle cx="16" cy="8" r="1"/></symbol>
+  <!-- RECEIPT_START_SCREEN_V1 -->
+  <symbol id="i-clipboard" viewBox="0 0 24 24"><rect x="7" y="4" width="13" height="17" rx="2"/><path d="M10 4h4l1-2H9L8 4m-4 4v12a2 2 0 0 0 2 2h10"/></symbol>
+  <symbol id="i-check" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6"/></symbol>
+  <symbol id="i-receipt" viewBox="0 0 24 24"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2V3Z"/><path d="M9 7h6M9 11h6M9 15h3"/></symbol>
+  <symbol id="i-arrow" viewBox="0 0 24 24"><path d="M4 12h16m-6-6 6 6-6 6"/></symbol>
+  <symbol id="i-download" viewBox="0 0 24 24"><path d="M12 3v12m-4-4 4 4 4-4M4 17v4h16v-4"/></symbol>
+  <symbol id="i-expand" viewBox="0 0 24 24"><path d="M8 3H3v5m13-5h5v5M3 16v5h5m13-5v5h-5"/></symbol>
+  <symbol id="i-close" viewBox="0 0 24 24"><path d="m6 6 12 12M6 18 18 6"/></symbol>
+  <symbol id="i-grid" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M9 3v18M15 3v18"/></symbol>
+</defs></svg>
+
+<header class="app-header">
+  <a class="brand" href="/analog" aria-label="Ашыбулак строй — перейти к поиску аналогов"><span class="brand-mark"><i></i><i></i><i></i><i></i></span><span>Ашыбулак строй</span></a>
+  <div class="header-divider"></div><div class="workspace-label">Подготовка <strong>счёта на оплату</strong></div>
+  <div class="header-right"><span id="task-badge" class="task-badge" hidden></span><label class="debug-toggle"><input id="debug-toggle" type="checkbox">Режим разработчика</label><span class="local-badge"><span class="status-dot"></span>Локальная обработка</span><span class="version">OCR / 01</span></div>
+</header>
+
+<section class="matching-compare" aria-labelledby="matching-title">
+  <h2 id="matching-title">Сравнение алгоритмов подбора товаров</h2>
+  <p>Все алгоритмы ищут в одном каталоге 1С. При равном проценте выше кандидат с ближайшей учётной ценой 1С (одинаковые валюта и единица). Выберите позицию распознанного чека или введите название.</p>
+  <form id="matching-compare-form">
+    <label>Позиция чека<select id="matching-receipt-row"><option value="">Введите название вручную</option></select></label>
+    <label class="matching-query">Товар Торгсофт<input id="matching-query" required placeholder="Например: Электроды МР-3 3 мм 2,5 кг"></label>
+    <label>Цена за единицу<input id="matching-price" type="number" min="0" step="any" placeholder="Необязательно"></label>
+    <label>Минимальный остаток<input id="matching-min-stock" type="number" min="0" step="any" value="3"></label>
+    <button class="button button-primary" type="submit">Сравнить все алгоритмы</button>
+  </form>
+  <p id="matching-status" role="status" aria-live="polite">copilot_1 · sql_str_2 · sql_str_3 · opencode_4</p>
+  <div id="matching-comparison-results"></div>
+</section>
+<main class="workspace">
+  <section class="input-panel" aria-labelledby="input-heading">
+    <div class="panel-heading"><div><span class="eyebrow">01 / ИСТОЧНИК</span><h1 id="input-heading">Фото чека Торгсофта</h1></div><div class="receipt-upload-actions"><button id="paste-top" class="button button-white" type="button" aria-label="Вставить чек из буфера обмена" hidden><svg aria-hidden="true"><use href="#i-clipboard"/></svg>Вставить чек</button><button id="choose-top" class="button button-white" type="button"><svg><use href="#i-upload"/></svg>Загрузить чек</button></div></div>
+    <div class="panel-scroll" id="input-scroll">
+      <div id="drop-zone" class="drop-zone" tabindex="0" role="button" aria-label="Загрузить фото чека Торгсофта кнопкой, перетаскиванием или вставкой">
+        <!-- RECEIPT_IDLE_INVITATION_V1: только пустой экран; никакой фиктивной обработки -->
+        <div class="receipt-idle-landing" aria-hidden="true">
+          <div class="receipt-idle-sheet">
+            <span class="receipt-idle-sheet-title"></span>
+            <span class="receipt-idle-sheet-line short"></span>
+            <span class="receipt-idle-sheet-line"></span>
+            <span class="receipt-idle-sheet-grid"></span>
+            <span class="receipt-idle-sheet-barcode"></span>
+          </div>
+          <div class="receipt-idle-shadow"></div>
+        </div>
+        <div class="upload-illustration"><div class="mini-paper"><span></span><span></span><span></span><div class="mini-grid"></div><span></span></div><div class="upload-orb"><svg><use href="#i-upload"/></svg></div></div>
+        <h2>Загрузите фото чека Торгсофта</h2><p>Перетащите сюда фотографию чека<br>или выберите файл на компьютере</p>
+        <div class="upload-actions">
+          <button id="choose-main" class="button button-primary" type="button"><svg><use href="#i-image"/></svg>Выбрать фото чека</button>
+          <button id="paste-main" class="button button-white" type="button" aria-label="Вставить фотографию чека из буфера обмена"><svg><use href="#i-clipboard"/></svg>Вставить из буфера</button>
+        </div>
+        <div class="upload-formats">JPG, PNG, WEBP <span>·</span> до <span id="upload-limit">20</span> МБ</div>
+        <div class="paste-hint">Или нажмите <kbd>Ctrl</kbd> + <kbd>V</kbd>, если фото скопировано</div>
+      </div>
+      <div id="image-list" class="image-list" aria-live="polite"></div>
+      <div id="input-note" class="input-note"><svg><use href="#i-check"/></svg><p>Исходное фото сохраняется.<br>Промежуточные изображения появятся здесь по ходу работы.</p></div>
+    </div>
+    <div id="drop-overlay" class="drop-overlay" hidden><svg><use href="#i-upload"/></svg><strong>Отпустите фото для загрузки</strong></div>
+  </section>
+
+  <section class="output-panel" aria-labelledby="output-heading">
+    <div id="receipt-waiting-overlay" class="receipt-waiting-overlay" role="status" aria-live="polite">
+      <div class="receipt-waiting-card">
+        <span class="receipt-waiting-icon" aria-hidden="true"><svg><use href="#i-receipt"/></svg></span>
+        <strong id="receipt-gate-title">Загрузите чек Торгсофта</strong>
+        <p id="receipt-gate-description">Здесь появятся товары, количество, цены и НДС после обнаружения таблицы.</p>
+      </div>
+    </div>
+    <div class="panel-heading"><div><span class="eyebrow">02 / РЕЗУЛЬТАТ</span><h2 id="output-heading">Электронный чек</h2></div><span id="result-state" class="pill neutral">Ожидает фото</span></div>
+    <div class="panel-scroll result-scroll" id="output-scroll">
+      <div class="process-card" id="process-card">
+        <div class="process-top"><span class="process-icon"><svg><use href="#i-grid"/></svg></span><div><strong id="process-title">Готовы к работе</strong><p id="process-subtitle">Загрузите фото — остальное сделаем мы</p></div><span id="progress-label">0%</span></div>
+        <div class="progress-track" role="progressbar" aria-label="Обработка фотографии" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><div id="progress-fill"></div></div>
+        <section class="web-progress" aria-label="Фактические этапы обработки">
+          <div id="progress-preview-wrap" class="web-progress-preview" hidden><img id="progress-preview" alt="Последний результат обработки изображения"><span id="progress-preview-label"></span></div>
+          <ol id="progress-history" class="web-progress-history"><li class="empty">Этапы появятся после загрузки фотографии.</li></ol>
+        </section>
+        <section id="ocr-activity" class="ocr-live" aria-label="Текущая операция" hidden>
+          <div class="ocr-live-header"><span class="ocr-live-indicator" id="ocr-activity-dot" aria-hidden="true"></span><span id="ocr-activity-action">Начинаем обработку</span></div>
+          <p id="ocr-activity-details"></p>
+          <div class="ocr-live-meta"><span id="ocr-activity-elapsed">Прошло 0 с</span><span id="ocr-activity-last">Последнее действие сейчас</span><span id="ocr-activity-connection">Проверяем связь</span></div>
+          <p id="ocr-activity-idle" hidden></p>
+        </section>
+        <ol class="steps" aria-label="Этапы обработки"><li data-step="geometry"><span>1</span>Геометрия</li><li data-step="ocr"><span>2</span>Товары</li><li data-step="layout"><span>3</span>Цены и НДС</li><li data-step="matching"><span>4</span>Справочник</li></ol>
+      </div>
+
+      <details class="activity debug-only" id="activity" hidden open><summary><span class="live-dot"></span>Логи обработки <span id="event-count">0 событий</span></summary><ol id="event-log"></ol></details>
+
+      <div id="empty-result" class="empty-result"><div class="empty-receipt"><svg><use href="#i-receipt"/></svg></div><h3>Из фотографии — в данные</h3><p>Здесь появятся товары, количество и цены.<br>Покажем ход распознавания и строки,<br>которые стоит проверить.</p><div class="empty-flow"><span>Фото</span><svg><use href="#i-arrow"/></svg><span>Распознавание</span><svg><use href="#i-arrow"/></svg><span>Чек</span></div></div>
+
+      <div id="error-card" class="error-card" role="alert" hidden><strong>Нужна другая фотография</strong><p id="error-text"></p><button id="retry-button" class="button button-white" type="button">Выбрать другое фото</button></div>
+
+      <div id="receipt-area" hidden>
+        <details id="editor-panel" class="receipt-editor" hidden>
+          <summary><span>Редактирование чека</span><span id="editor-hint">Выберите строку в таблице</span></summary>
+          <form id="row-editor">
+            <label class="field">Строка чека<select id="edit-row"></select></label>
+            <div id="editor-row-fields">
+              <label class="field">Название в электронном чеке<textarea id="edit-name" rows="2"></textarea></label>
+              <p class="editor-evidence" id="edit-ocr-evidence"></p>
+              <div id="catalog-picker"><label class="field">Подбор из справочника Торгсофт<input id="catalog-search" type="search" placeholder="Название или артикул" autocomplete="off"></label><div id="catalog-options" class="catalog-options"></div><label id="article-field" class="field" hidden>Артикул<select id="edit-article"></select></label><button id="accept-match" class="text-button" type="button" hidden>Принять найденный товар</button></div>
+              <div class="editor-numbers"><label class="field">Количество<input id="edit-quantity" inputmode="decimal" autocomplete="off"></label><label class="field">Цена, ₸<input id="edit-price" inputmode="decimal" autocomplete="off"></label></div>
+              <p id="editor-error" class="editor-error" role="alert" hidden></p>
+              <button id="save-row" type="submit" class="button button-primary">Сохранить и утвердить строку</button>
+            </div>
+          </form>
+          <div class="original-total-editor"><label class="field">Итог на фотографии, ₸<input id="edit-expected-total" inputmode="decimal" placeholder="Если OCR не прочитал — введите с фото"></label><button id="save-total" class="button button-white" type="button">Сохранить итог</button></div>
+          <p class="editor-evidence">Исходный OCR сохраняется отдельно. Подтверждение снимает вопрос к названию, а сумма проверяется по количеству и цене.</p>
+          <div class="finalize-bar"><span id="finalize-hint"></span><button id="finalize-receipt" class="button button-primary" type="button" disabled>Завершить проверку</button></div>
+        </details>
+        <section id="math-panel" class="math-panel" hidden aria-live="polite">
+          <div class="math-heading"><strong>Проверка суммы</strong><span id="math-status" class="pill neutral"></span></div>
+          <div class="math-values"><div><span>По строкам чека</span><strong id="calculated-total">—</strong></div><div><span>Итог с фотографии</span><strong id="expected-total-label">—</strong></div><div><span>Разница</span><strong id="total-difference">—</strong></div></div>
+          <p id="math-breakdown"></p><div id="math-issues"></div>
+        </section>
+        <div id="receipt-toolbar" class="receipt-toolbar"><div class="result-counts"><span id="product-count">0 товаров</span><button id="review-toggle" type="button" class="review-toggle" aria-pressed="false">Проверить <b id="review-count">0</b></button></div><div class="exports" id="exports" hidden><a id="download-json" class="icon-link" href="#" download title="Скачать данные JSON">JSON<svg><use href="#i-download"/></svg></a><a id="download-csv" class="icon-link" href="#" download title="Скачать таблицу CSV">CSV<svg><use href="#i-download"/></svg></a><button id="print-button" type="button" class="text-button">Печать</button></div></div>
+        <article class="receipt-paper">
+          <div class="receipt-top"><div><span class="receipt-kicker">ТОРГСОФТ</span><h3>Предзаказ<span id="order-number"></span></h3><p id="receipt-date">Данные с фотографии</p></div><span class="receipt-symbol"><svg><use href="#i-receipt"/></svg></span></div>
+          <div class="receipt-table-wrap"><table class="receipt-table"><thead><tr><th>№</th><th>Наименование</th><th>Кол-во</th><th>Цена</th></tr></thead><tbody id="receipt-body"></tbody></table></div>
+          <div id="receipt-empty-filter" class="empty-filter" hidden>В этом чеке нет строк, требующих проверки.</div>
+          <div class="receipt-total"><span>Итого</span><strong id="receipt-total">—</strong></div>
+          <div class="receipt-bottom" hidden><span id="receipt-meta"></span></div>
+        </article>
+        <section id="receipt-errors" class="receipt-errors" hidden aria-live="polite">
+          <strong>Почему чек отмечен красным</strong>
+          <ul id="receipt-error-reasons"></ul>
+          <p>Нажмите на строку чека, чтобы сверить данные с фотографией и исправить их.</p>
+        </section>
+        <div id="review-note" class="review-note" hidden><span class="warning-dot">!</span><p>Нажмите на отмеченную строку, чтобы проверить и утвердить её данные.</p></div>
+        <div id="geometry-note" class="geometry-note" hidden></div>
+        <details class="raw-text debug-only"><summary>Исходный текст OCR</summary><pre id="raw-text"></pre></details>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="invoice-panel" id="invoice-panel" aria-labelledby="invoice-heading" hidden>
+    <div id="invoice-divider" role="separator" aria-label="Изменить высоту чека и счёта" aria-orientation="horizontal" aria-controls="invoice-panel" tabindex="0" title="Потяните вверх или вниз; стрелки ↑ ↓ — изменить высоту"></div>
+    <div class="panel-heading"><div><span class="eyebrow">03 / СЧЁТ 1С</span><h2 id="invoice-heading">Счёт на оплату</h2></div><div class="invoice-heading-actions"><button id="invoice-edit-products" type="button" aria-controls="invoice-rows">Выбрать товар 1С</button><button id="invoice-confirm" type="button" hidden>Подтвердить и передать в 1С</button><span id="invoice-confirm-state" class="task-badge" hidden></span><span id="invoice-state" class="pill neutral">—</span></div></div>
+    <div class="panel-scroll invoice-scroll" id="invoice-scroll">
+      <div id="invoice-empty" class="invoice-empty">Счёт формируется из электронного чека.</div>
+      <div id="invoice-content" hidden>
+        <div id="invoice-doc" class="invoice-doc"></div>
+        <section class="invoice-rows" aria-label="Строки чека и номенклатура 1С">
+          <div class="invoice-rows-head">
+            <strong>Строки чека → номенклатура 1С</strong>
+            <span class="invoice-head-actions">
+              <button id="invoice-preview" class="button button-white" type="button">Предпросмотр</button>
+              <button id="invoice-save" class="button button-primary" type="button">Сохранить связи</button>
+              <button id="invoice-train" class="button button-white" type="button">Обучить подтверждённым связям</button>
+            </span>
+          </div>
+          <ol id="invoice-rows" class="invoice-rows-list"></ol>
+          <p class="invoice-note">Кандидаты показываются до 10 вариантов, но связь подтверждает только оператор — автоматических подтверждений нет.</p>
+        </section>
+        <section class="invoice-blockers" id="invoice-blockers" hidden>
+          <strong>Замечания к счёту</strong>
+          <ul id="invoice-reasons"></ul>
+        </section>
+        <div class="invoice-actions">
+          <a id="invoice-pdf" class="button button-primary" href="#" hidden>Скачать PDF счёта</a>
+          <span id="invoice-pdf-hint" class="invoice-hint"></span>
+        </div>
+        <iframe id="invoice-print-preview" title="Печатная форма счёта — PDF" hidden></iframe>
+        <p id="invoice-confirm-error" role="alert" hidden></p>
+        <section id="ocr-confirm-success" role="status" aria-live="polite" tabindex="-1" hidden>
+          <h2>Обработка завершена, данные будут переданы в 1С.</h2>
+          <p>Можете закрывать текущую веб-страницу.</p>
+        </section>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="app-footer"><span><span class="status-dot" id="connection-dot"></span><span id="connection-text">Подключение к серверу…</span><span id="stock-as-of" class="stock-as-of" hidden></span></span><span>Фотографии обрабатываются на этом компьютере</span></footer>
+<input id="file-input" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+<div id="toast" class="toast" role="status" hidden></div>
+<dialog id="image-dialog"><div class="dialog-header"><strong id="dialog-title">Изображение</strong><button id="close-dialog" class="icon-button" type="button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></div><div id="dialog-image"></div></dialog>
+</body></html>

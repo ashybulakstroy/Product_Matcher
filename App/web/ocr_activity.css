@@ -1,0 +1,14 @@
+/* Дополнительная панель, не заменяющая существующие анимации. */
+#ocr-activity{border-top:1px solid #e1e8f4;margin-top:14px;padding-top:11px;color:#5b6c85;font-size:11px;line-height:1.55}
+#ocr-activity[hidden]{display:none!important}
+.ocr-live-header{display:flex;align-items:center;gap:8px}
+.ocr-live-indicator{height:8px;width:8px;border-radius:50%;flex:0 0 8px;background:#83a1d4;box-shadow:0 0 0 3px #83a1d418;animation:ocr-breathe 1.55s ease-in-out infinite}
+.ocr-live-indicator.disconnected{background:#c88f5a;animation:none}
+.ocr-live-indicator.done{background:#40a184;animation:none}
+#ocr-activity-action{font-weight:600;color:#354b6e;flex:1}
+#ocr-activity-details{margin:5px 0 7px;font-size:10px;color:#677d9c}
+.ocr-live-meta{display:flex;gap:14px;flex-wrap:wrap;color:#8697af;font-size:10px;font-variant-numeric:tabular-nums}
+#ocr-activity-idle{margin-top:7px;color:#b17d36;font-size:10px}
+#ocr-activity-idle[hidden]{display:none!important}
+@keyframes ocr-breathe{0%,100%{opacity:.5;transform:scale(.9)}50%{opacity:1;transform:scale(1.1)}}
+@media(prefers-reduced-motion:reduce){.ocr-live-indicator{animation:none}}

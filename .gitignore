@@ -1,0 +1,17 @@
+__pycache__/
+.pytest_cache/
+.venv/
+.env
+.vscode/
+*.pyc
+*.pyo
+*.log
+.DS_Store
+web_outputs/
+output/
+eval_outputs/
+experiment_outputs/
+.cache/
+data/**
+!data/**/
+!data/**/*.md
