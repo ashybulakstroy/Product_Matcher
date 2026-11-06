@@ -4,7 +4,7 @@
 (function invoicePanel(){
 const $ = id => document.getElementById(id);
 const TASK=window.OCRTask||null;
-const INV = {jobId:null, revision:null, model:null, picks:new Map(), busy:false, dirty:false, pdfUrl:null, analogs:new Map()};
+const INV = {jobId:null, revision:null, model:null, picks:new Map(), busy:false, dirty:false, pdfUrl:null, analogs:new Map(), openRows:new Set()};
 
 function clearPdf(){
   const frame=$('invoice-print-preview');
@@ -76,13 +76,22 @@ function pickLabel(row){
 }
 
 function renderRow(item,index){
+  const rowKey=String(item.row_id);
   const li=node('li','inv-row');
-  const head=node('div','inv-row-head');
+  const details=node('details','inv-row-details');
+  const head=node('summary','inv-row-head');
+  // Buttons inside summary must not toggle the row.
+  head.addEventListener('click',event=>{
+    if(event.target.closest('button,a,input,select,textarea'))event.preventDefault();
+  });
   const left=node('div','inv-row-title');
   const number=node('span','inv-row-number','#'+(index+1));
   const name=node('button','inv-row-name',item.source_name||'—');
   name.type='button';name.title='Показать строку в чеке';
-  name.addEventListener('click',()=>{try{focusRow(Number(item.row_id));}catch(error){}});
+  name.addEventListener('click',event=>{
+    event.preventDefault();event.stopPropagation();
+    try{focusRow(Number(item.row_id));}catch(error){}
+  });
   const amount=node('span','inv-row-amount',money(item.source_amount));
   left.append(number,name,amount);
   const chosen=node('div','inv-row-chosen');
@@ -116,7 +125,6 @@ function renderRow(item,index){
   });
   body.append(search,list);
   // OCR_ANALOG_BRIDGE_V1: suggestions stay local until explicit save.
-  const rowKey=String(item.row_id);
   if(!INV.analogs.has(rowKey))INV.analogs.set(rowKey,{busy:false,options:null,message:''});
   const aiState=INV.analogs.get(rowKey);
   const aiTools=node('div','inv-ai-tools');
@@ -173,7 +181,12 @@ function renderRow(item,index){
   const picked=INV.picks.get(String(item.row_id));
   if(picked)body.append(selectionBar(item,picked));
   draw(aiState.options?.length?aiState.options:invCandidates(item));
-  li.append(head,body);
+  details.append(head,body);
+  details.open=INV.openRows.has(rowKey);
+  details.addEventListener('toggle',()=>{
+    if(details.open)INV.openRows.add(rowKey);else INV.openRows.delete(rowKey);
+  });
+  li.append(details);
   return li;
 }
 
@@ -422,13 +435,13 @@ function sync(){
   const panel=$('invoice-panel');
   if(!ok){
     if(panel.hidden&&INV.jobId===null)return;
-    panel.hidden=true;INV.analogs.clear();INV.jobId=null;INV.model=null;INV.picks=new Map();INV.revision=null;
+    panel.hidden=true;INV.analogs.clear();INV.openRows.clear();INV.jobId=null;INV.model=null;INV.picks=new Map();INV.revision=null;
     return;
   }
   panel.hidden=false;
   const revision=receipt.job_id+':'+receipt.revision;
   if(revision===INV.revision)return;
-  INV.analogs.clear();INV.jobId=receipt.job_id;INV.revision=revision;
+  INV.analogs.clear();INV.openRows.clear();INV.jobId=receipt.job_id;INV.revision=revision;
   clearPdf();INV.dirty=false;
   INV.model=null;INV.picks=new Map();
   $('invoice-content').hidden=true;$('invoice-empty').hidden=false;
@@ -439,9 +452,18 @@ function sync(){
 
 function start(){
   $('invoice-edit-products').addEventListener('click',()=>{
+    const block=$('invoice-rows-block');
+    if(block&&!block.open)block.open=true;
     const form=document.querySelector('#invoice-content .invoice-rows');
     form.scrollIntoView({block:'start',behavior:'instant'});
+    const firstRow=form.querySelector('.inv-row-details');
+    if(firstRow&&!firstRow.open)firstRow.open=true;
     form.querySelector('.inv-search')?.focus({preventScroll:true});
+  });
+  const rowsBlock=$('invoice-rows-block');
+  // Action buttons live inside the summary: keep them from collapsing the block.
+  rowsBlock?.addEventListener('click',event=>{
+    if(event.target.closest('button,a,input,select,textarea'))event.preventDefault();
   });
   $('invoice-save').addEventListener('click',()=>send('selections'));
   $('invoice-preview').addEventListener('click',()=>send('preview'));

@@ -149,18 +149,18 @@
       <div id="invoice-empty" class="invoice-empty">Счёт формируется из электронного чека.</div>
       <div id="invoice-content" hidden>
         <div id="invoice-doc" class="invoice-doc"></div>
-        <section class="invoice-rows" aria-label="Строки чека и номенклатура 1С">
-          <div class="invoice-rows-head">
-            <strong>Строки чека → номенклатура 1С</strong>
+        <details class="invoice-rows" id="invoice-rows-block" aria-label="Трансформация: строки чека в номенклатуру 1С">
+          <summary class="invoice-rows-head">
+            <strong>Трансформация: Строки чека → номенклатура 1С</strong>
             <span class="invoice-head-actions">
               <button id="invoice-preview" class="button button-white" type="button">Предпросмотр</button>
               <button id="invoice-save" class="button button-primary" type="button">Сохранить связи</button>
               <button id="invoice-train" class="button button-white" type="button">Обучить подтверждённым связям</button>
             </span>
-          </div>
+          </summary>
           <ol id="invoice-rows" class="invoice-rows-list"></ol>
           <p class="invoice-note">Кандидаты показываются до 10 вариантов, но связь подтверждает только оператор — автоматических подтверждений нет.</p>
-        </section>
+        </details>
         <details class="invoice-blockers" id="invoice-blockers" hidden>
           <summary><strong>Замечания к счёту</strong></summary>
           <ul id="invoice-reasons"></ul>
