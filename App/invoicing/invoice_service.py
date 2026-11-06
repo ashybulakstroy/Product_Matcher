@@ -314,6 +314,11 @@ def invoice_model(receipt: dict, selections: dict[str, dict] | None = None,
     candidates = {row["row_id"]: _row_candidates(row,
                   allow_analog_fallback=row['row_id'] not in protected, database_id=database_id)
                   for row in source["items"]}
+    # Display-only catalog price, distinct from the calculated invoice unit price.
+    from App.invoicing.catalog_1c import catalog_item
+    for item in generation_result['items']:
+        card = catalog_item(item.get('catalog_id')) if item.get('catalog_id') else None
+        item['accounting_price'] = _plain(card.get('accounting_price')) if card else None
     blocked = _blocked_reasons(source, generation_result, document, amount_problems)
     revision = _revision(document)
     stored = {}

@@ -69,7 +69,7 @@ function pickFromRows(model){
     if(row.match_status==='manual'||row.match_status==='remembered'){
       INV.picks.set(String(row.row_id),{name:row.name,unit:row.unit||'шт',
         quantity:String(row.quantity||'1'),service:!!row.service,
-        catalog_id:row.catalog_id||null,code:row.code||null});
+        catalog_id:row.catalog_id||null,code:row.code||null,accounting_price:row.accounting_price??null});
     }
   }
 }
@@ -84,10 +84,18 @@ function selectionPayload(){
 
 function pickLabel(row){
   const pick=INV.picks.get(String(row.row_id));
-  if(pick)return pick.name+' · '+pick.unit+' · '+qty(pick.quantity);
-  if(row.match_status==='learned')return (row.name||'')+' · обучено';
-  if(row.match_status==='suggested')return (row.name||'')+' · предложено';
-  return null;
+  const selected=pick||(row.match_status!=='unmatched'&&row.name?row:null);
+  if(!selected)return null;
+  const card=invCandidates(row).find(option=>sameCandidate(option,selected));
+  const price=selected.accounting_price??card?.accounting_price??(sameCandidate(selected,row)?row.accounting_price:null);
+  const label=node('span','inv-row-known');
+  label.append(document.createTextNode(selected.name+' · '));
+  const comparison=priceComparison(row.source_price,price);
+  const kind=comparison?(comparison.percent<50?'normal':comparison.percent<=100?'warning':'high'):'';
+  const priceLabel=node('span','inv-analog-price'+(kind?' inv-price-status '+kind:''),wholeMoney(price));
+  priceLabel.title=comparison?comparison.label+' · Разница: '+Math.round(comparison.percent)+'%':'Нет данных для сравнения цен';
+  label.append(priceLabel);
+  return label;
 }
 
 function renderRow(item,index){
@@ -99,13 +107,12 @@ function renderRow(item,index){
   const number=node('span','inv-row-number','#'+(index+1));
   const name=node('span','inv-row-name',item.source_name||'—');
   head.title='Развернуть или свернуть товарную позицию';
-  const amount=node('span','inv-row-amount',money(item.source_amount));
+  const amount=node('span','inv-row-amount',wholeMoney(item.source_price));
   left.append(number,name,amount);
   const chosen=node('div','inv-row-chosen');
-  chosen.append(badge(item.match_status==='unmatched'?'Товар 1С не определён':item.match_status==='suggested'?'Предложено — не подтверждено':item.match_status,
-                      item.match_status==='unmatched'?'missing':'ok'));
   const known=pickLabel(item);
-  if(known)chosen.append(node('span','inv-row-known',known));
+  if(known)chosen.append(known);
+  else chosen.append(badge('Товар 1С не определён','missing'));
   head.append(left,chosen);
 
   const body=node('div','inv-row-body');
@@ -179,10 +186,10 @@ function renderRow(item,index){
         if(!option||!hasStock(option))throw Error('Товар не найден или остатка недостаточно.');
         if(INV.jobId!==jobId||INV.revision!==revision||INV.busy)throw Error('Квитанция изменилась или занята. Повторите выбор.');
         INV.picks.set(rowKey,{name:option.name,unit:option.unit||'шт',quantity:option.service?'1':String(item.source_quantity),
-          service:!!option.service,catalog_id:option.id,code:option.code||null});
+          service:!!option.service,catalog_id:option.id,code:option.code||null,accounting_price:option.accounting_price??null});
         INV.openRows.add(rowKey);INV.selectionFeedback={rowId:rowKey,until:Date.now()+900};
         markDirty();
-        if(!await send('selections',{auto:true}))throw Error('Не удалось сохранить выбор. Повторите попытку.');
+        if(!await send('selections',{auto:true,closeRow:rowKey}))throw Error('Не удалось сохранить выбор. Повторите попытку.');
         channel.postMessage({type:'accepted'});
         toast('Аналог выбран и сохранён для текущей квитанции: '+option.name);
         setTimeout(()=>channel.close(),1000);
@@ -322,11 +329,11 @@ function optionButton(option,item){
     const defaultQuantity=option.service?'1':String(safeQuantity(option));
     INV.picks.set(String(option.rowId),{name:option.name,unit:option.unit||(option.service?'усл':'шт'),
       quantity:defaultQuantity,service:!!option.service,catalog_id:option.catalog_id||option.id||null,
-      code:option.code||null});
+      code:option.code||null,accounting_price:option.accounting_price??null});
     INV.openRows.add(String(item.row_id));
     INV.selectionFeedback={rowId:String(item.row_id),until:Date.now()+900};
     markDirty();
-    send('selections',{auto:true});
+    send('selections',{auto:true,closeRow:String(item.row_id)});
   });
   return button;
 }
@@ -494,7 +501,7 @@ async function loadPrintPreview(payload){
   frame.focus({preventScroll:true});
 }
 
-async function send(action,{auto=false}={}){
+async function send(action,{auto=false,closeRow=null}={}){
   if(INV.busy)return;
   if(auto){$('invoice-autosave-status').textContent='Сохраняем выбор…';$('invoice-save').hidden=true;}
   const payload=selectionPayload();
@@ -515,6 +522,7 @@ async function send(action,{auto=false}={}){
     if(action==='selections')pickFromRows(model);
     if(!auto){await loadPrintPreview(payload);preparation('Подготовка завершена. PDF готов к просмотру.',false);}
     if(TASK)await TASK.refresh();
+    if(action==='selections'&&closeRow!==null)INV.openRows.delete(String(closeRow));
     refresh();
     if(action==='selections'){$('invoice-autosave-status').textContent='✓ Выбор сохранён для этой квитанции';$('invoice-save').hidden=true;}
     if(!auto)toast(action==='selections'?'Выбор сохранён для этой квитанции. Связи для будущих документов не изменены.':'Предпросмотр построен (изменения не сохранены)');
@@ -559,9 +567,9 @@ function start(){
     if(block&&!block.open)block.open=true;
     const form=document.querySelector('#invoice-content .invoice-rows');
     form.scrollIntoView({block:'start',behavior:'instant'});
-    const firstRow=form.querySelector('.inv-row-details');
-    if(firstRow&&!firstRow.open)firstRow.open=true;
-    form.querySelector('.inv-search')?.focus({preventScroll:true});
+    INV.openRows.clear();
+    for(const row of form.querySelectorAll('.inv-row-details'))row.open=false;
+    block.querySelector(':scope > summary')?.focus({preventScroll:true});
   });
   const rowsBlock=$('invoice-rows-block');
   // Action buttons live inside the summary: keep them from collapsing the block.
