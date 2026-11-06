@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import copy
 import json
+import logging
 import mimetypes
 import re
 import sys
@@ -695,6 +696,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
                 except ValueError as error:
                     return self.send_json(dict(error=str(error)), 409)
                 except Exception:
+                    logging.exception("Invoice model request failed")
                     return self.send_json(dict(error="Счёт не построен: внутренняя ошибка расчёта."), 500)
                 return self.send_json(model)
             if suffix == "invoice.pdf":
@@ -891,6 +893,41 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
             return super().do_GET()
 
         def do_POST(self):
+            # OCR_ANALOG_BRIDGE_V1: catalog context comes only from this job's task.
+            analog_route = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/analogs', urlparse(self.path).path)
+            if analog_route:
+                job = store.get(analog_route[1])
+                if job is None:
+                    return self.send_json(dict(error='Обработка не найдена'), 404)
+                try:
+                    length = int(self.headers.get('Content-Length', '0'))
+                    if length < 2 or length > 4096 or self.headers.get('Transfer-Encoding'):
+                        self.close_connection = True
+                        return self.send_json(dict(error='Неверный размер запроса'), 400)
+                    payload = json.loads(self.rfile.read(length).decode('utf-8'))
+                    if (not isinstance(payload, dict) or isinstance(payload.get('row_id'), bool)
+                            or not isinstance(payload.get('row_id'), (str, int))):
+                        return self.send_json(dict(error='Не указан row_id'), 400)
+                    revision = payload.get('receipt_revision')
+                    if revision is not None and (type(revision) is not int or revision < 0):
+                        return self.send_json(dict(error='Неверная версия чека'), 400)
+                    with job.condition:
+                        if job.status != 'done' or not job.result:
+                            return self.send_json(dict(error='OCR ещё не завершён'), 409)
+                        receipt = copy.deepcopy(job.result)
+                        if revision is not None and receipt.get('revision', 0) != revision:
+                            return self.send_json(dict(error='Чек изменился. Повторите поиск.'), 409)
+                    from App.invoicing.matching_bridge import for_invoice_row
+                    result = for_invoice_row(receipt, payload['row_id'], self.invoice_context(job))
+                    with job.condition:
+                        if job.result.get('revision', 0) != receipt.get('revision', 0):
+                            return self.send_json(dict(error='Чек изменился. Повторите поиск.'), 409)
+                    return self.send_json(invoice_service._plain(result))
+                except (ValueError, TypeError, UnicodeError) as error:
+                    return self.send_json(dict(error=str(error)), 400)
+                except Exception:
+                    logging.exception('Analog voting request failed')
+                    return self.send_json(dict(error='Поиск аналогов недоступен'), 503)
             if urlparse(self.path).path in {'/analog', '/api/matching/debug', '/api/matching/test'}:
                 self.close_connection = True
                 return MatchingDebugHandler.do_POST(self)

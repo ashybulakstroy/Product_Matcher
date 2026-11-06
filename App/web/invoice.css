@@ -92,3 +92,5 @@
   .invoice-heading-actions{flex-wrap:wrap;max-width:100%}
   .invoice-heading-actions .task-badge{white-space:normal;overflow-wrap:anywhere}
 }
+
+.inv-ai-tools{display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-top:8px}.inv-ai-tools .button{padding:6px 12px;font-size:12px}.inv-ai-status{font-size:12px;color:var(--muted);flex:1;min-width:180px}

@@ -4,7 +4,7 @@
 (function invoicePanel(){
 const $ = id => document.getElementById(id);
 const TASK=window.OCRTask||null;
-const INV = {jobId:null, revision:null, model:null, picks:new Map(), busy:false, dirty:false, pdfUrl:null};
+const INV = {jobId:null, revision:null, model:null, picks:new Map(), busy:false, dirty:false, pdfUrl:null, analogs:new Map()};
 
 function clearPdf(){
   const frame=$('invoice-print-preview');
@@ -40,8 +40,12 @@ function badge(text,kind){
 async function fetchModel(){
   try{
     const response=await fetch(`/api/jobs/${INV.jobId}/invoice`);
-    return response.ok?await response.json():null;
-  }catch(error){return null;}
+    if(response.ok)return await response.json();
+    let message='Счёт не построен';
+    try{const data=await response.json();if(data&&data.error)message=data.error;}catch(error){}
+    toast(message);
+    return null;
+  }catch(error){toast('Счёт недоступен: '+error.message);return null;}
 }
 
 function pickFromRows(model){
@@ -111,9 +115,64 @@ function renderRow(item,index){
     },300);
   });
   body.append(search,list);
+  // OCR_ANALOG_BRIDGE_V1: suggestions stay local until explicit save.
+  const rowKey=String(item.row_id);
+  if(!INV.analogs.has(rowKey))INV.analogs.set(rowKey,{busy:false,options:null,message:''});
+  const aiState=INV.analogs.get(rowKey);
+  const aiTools=node('div','inv-ai-tools');
+  const aiVote=node('button','button button-white','ИИ');
+  aiVote.type='button';aiVote.title='Голосование алгоритмов и предварительный выбор';
+  const aiSearch=node('button','button button-white','ИИ поиск');
+  aiSearch.type='button';aiSearch.title='Кандидаты голосования для ручного выбора';
+  const aiStatus=node('span','inv-ai-status',aiState.message);
+  aiStatus.setAttribute('role','status');aiStatus.setAttribute('aria-live','polite');
+  const updateAI=()=>{
+    aiVote.disabled=aiSearch.disabled=INV.busy||aiState.busy;
+    aiStatus.textContent=aiState.message;
+  };
+  const runAI=async mode=>{
+    const currentJob=INV.jobId,currentRevision=INV.revision;
+    if(!currentJob||aiState.busy||INV.busy)return;
+    aiState.busy=true;aiState.message='Подбираем аналоги…';updateAI();
+    try{
+      const response=await fetch(`/api/jobs/${encodeURIComponent(currentJob)}/analogs`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({row_id:rowKey,receipt_revision:result()?.revision??0})});
+      const data=await response.json();
+      if(!response.ok)throw new Error(data.error||'Ошибка поиска');
+      if(INV.jobId!==currentJob||INV.revision!==currentRevision)return;
+      const currentItem=INV.model?.generation.items.find(row=>String(row.row_id)===rowKey)||item;
+      const options=(data.items||[]).map(candidate=>({...candidate,rowId:rowKey,
+        sourceQuantity:currentItem.source_quantity,origin:'analog_vote',catalog_id:candidate.id}));
+      aiState.options=options;
+      const protectedPick=INV.picks.has(rowKey)||['manual','remembered','learned'].includes(currentItem.match_status);
+      const winner=options.find(candidate=>String(candidate.catalog_id)===String(data.recommended_id));
+      if(mode==='vote'&&winner&&!data.is_tie&&!protectedPick){
+        aiState.message=`Лидер голосования: ${winner.name}. Выбор предварительный — сохраните связи отдельно.`;
+        optionButton(winner,currentItem).click();
+        return;
+      }
+      aiState.message=data.is_tie?'Ничья голосования — выберите товар вручную.':
+        !options.length?'Аналоги с достаточным остатком не найдены.':
+        mode==='vote'&&protectedPick?'Текущая связь сохранена. Для замены выберите товар вручную.':
+        `Найдено аналогов: ${options.length}. Выберите товар вручную.`;
+      if(data.errors?.length)aiState.message+=' Часть алгоритмов недоступна.';
+      draw(options.length?options:invCandidates(currentItem));
+    }catch(error){
+      if(INV.jobId===currentJob&&INV.revision===currentRevision)aiState.message='ИИ поиск: '+error.message;
+    }finally{
+      aiState.busy=false;
+      if(INV.jobId===currentJob&&INV.revision===currentRevision){
+        if(li.isConnected)updateAI();else refresh();
+      }
+    }
+  };
+  aiVote.addEventListener('click',()=>runAI('vote'));
+  aiSearch.addEventListener('click',()=>runAI('list'));
+  updateAI();aiTools.append(aiVote,aiSearch,aiStatus);body.append(aiTools);
   const picked=INV.picks.get(String(item.row_id));
   if(picked)body.append(selectionBar(item,picked));
-  draw(invCandidates(item));
+  draw(aiState.options?.length?aiState.options:invCandidates(item));
   li.append(head,body);
   return li;
 }
@@ -151,7 +210,7 @@ function optionButton(option,item){
   button.type='button';
   button.append(node('span','inv-option-name',option.name||'—'),
                 node('span','inv-option-meta',[
-                  option.origin==='ai_matching'?'ИИ-сопоставление':option.origin==='proposal'?'в предложениях':option.origin==='remembered'?'подтверждено ранее':'справочник',
+                  option.origin==='analog_vote'?`Голосование: ${option.votes??0} голосов, ${option.vote_pct??0}% · ${(option.voters||[]).join(', ')}`:option.origin==='ai_matching'?'ИИ-сопоставление':option.origin==='proposal'?'в предложениях':option.origin==='remembered'?'подтверждено ранее':'справочник',
                   option.code?'код '+option.code:null,
                   option.unit?option.unit:null,
                   option.stock_quantity!=null?('остаток '+option.stock_quantity):'остаток unknown'
@@ -363,13 +422,13 @@ function sync(){
   const panel=$('invoice-panel');
   if(!ok){
     if(panel.hidden&&INV.jobId===null)return;
-    panel.hidden=true;INV.jobId=null;INV.model=null;INV.picks=new Map();INV.revision=null;
+    panel.hidden=true;INV.analogs.clear();INV.jobId=null;INV.model=null;INV.picks=new Map();INV.revision=null;
     return;
   }
   panel.hidden=false;
   const revision=receipt.job_id+':'+receipt.revision;
   if(revision===INV.revision)return;
-  INV.jobId=receipt.job_id;INV.revision=revision;
+  INV.analogs.clear();INV.jobId=receipt.job_id;INV.revision=revision;
   clearPdf();INV.dirty=false;
   INV.model=null;INV.picks=new Map();
   $('invoice-content').hidden=true;$('invoice-empty').hidden=false;

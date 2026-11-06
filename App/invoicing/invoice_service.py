@@ -143,7 +143,7 @@ def _blocked_reasons(source: dict, generation_result: dict, document: dict,
     return list(dict.fromkeys(reasons))
 
 
-def _row_candidates(row: dict) -> dict[str, Any]:
+def _row_candidates(row: dict, *, allow_analog_fallback=True, database_id=None) -> dict[str, Any]:
     article = row.get("torgsoft_article")
     resolved = resolve_source(row, article)
     result: dict[str, Any] = {"status": resolved["status"], "items": [],
@@ -172,6 +172,13 @@ def _row_candidates(row: dict) -> dict[str, Any]:
         if item['id'] not in existing:
             result['items'].append({**item, 'origin': 'ai_matching' if item.get('match_method')=='ai_matching' else 'search'})
             existing.add(item['id'])
+    # OCR_ANALOG_BRIDGE_V1: optional alternatives only; generation is already built.
+    if allow_analog_fallback and not result['remembered']:
+        from App.invoicing.matching_bridge import fallback_suggestions
+        suggestions = fallback_suggestions(row, matches['items'], catalog(), database_id=database_id)
+        added = [dict(item, origin='analog_vote') for item in suggestions if item['id'] not in existing]
+        if added:
+            result['items'] = result['items'][:5] + added[:5] + result['items'][5:]
     result['items'] = result['items'][:10]
     # Proposal/remembered contracts may omit stock metadata; use live identity only.
     from App.invoicing.catalog_1c import catalog_item
@@ -289,7 +296,11 @@ def invoice_model(receipt: dict, selections: dict[str, dict] | None = None,
         # Keep the printed receipt tax; never take a tax amount from a catalog.
         generation_result["vat_amount"] = vat_text
     document = generation.invoice_document(source, generation_result)
-    candidates = {row["row_id"]: _row_candidates(row) for row in source["items"]}
+    protected = {str(row['row_id']) for row in generation_result['items']
+                 if row.get('match_status') in {'manual', 'remembered', 'learned'}}
+    candidates = {row["row_id"]: _row_candidates(row,
+                  allow_analog_fallback=row['row_id'] not in protected, database_id=database_id)
+                  for row in source["items"]}
     blocked = _blocked_reasons(source, generation_result, document, amount_problems)
     revision = _revision(document)
     stored = {}

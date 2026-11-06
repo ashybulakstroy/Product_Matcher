@@ -371,7 +371,15 @@ def build_generation(receipt, selections=None, suggest=False, database_id=None, 
 
 
 def invoice_document(receipt, generation):
-    issuer = json.loads(ISSUER_PATH.read_text(encoding="utf-8"))
+    try:
+        issuer = json.loads(ISSUER_PATH.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        raise ValueError(
+            f"Не найден файл реквизитов счёта: {ISSUER_PATH}. "
+            "Скопируйте invoice_issuer.json в папку data проекта."
+        ) from None
+    except (OSError, json.JSONDecodeError) as error:
+        raise ValueError(f"Файл реквизитов счёта недоступен или повреждён: {ISSUER_PATH} ({error})") from None
     errors = list(generation["warnings"])
     try:
         date = datetime.strptime(receipt.get("date") or "", "%d.%m.%Y").strftime("%d.%m.%Y")
