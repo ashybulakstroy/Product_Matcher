@@ -1,4 +1,4 @@
-from App.services.matching import match_products
+from App.matching.algorithms.fuzzy.copilot_1 import match_products
 
 
 def main() -> None:

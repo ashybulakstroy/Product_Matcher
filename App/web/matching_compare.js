@@ -34,7 +34,7 @@
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const current = ++requestNumber;
-    status.textContent = 'Сравниваем copilot_1, sql_str_2, sql_str_3 и opencode_4…';
+    status.textContent = 'Запускаем алгоритмы параллельно… Первый расчёт каталога может занять несколько минут.';
     output.replaceChildren();
     try {
       const response = await fetch('/api/matching/test', {
@@ -46,14 +46,18 @@
       const data = await response.json();
       if (current !== requestNumber) return;
       output.innerHTML = `<table><thead><tr><th>Алгоритм</th><th>Лучший кандидат</th><th>Недостаточный остаток</th><th>Все кандидаты</th></tr></thead><tbody>${data.results_by_algorithm.map(result => {
+        if (result.status !== 'ok') return `<tr><td><strong>${escape(result.algorithm_name)}</strong><small>${Math.round(result.elapsed_ms ?? 0)} мс</small></td><td colspan="3">${escape(result.error)}</td></tr>`;
         const url = result.full_results_url;
         const safeUrl = typeof url === 'string' && url.startsWith('/analog/list?') ? url : '/analog';
-        return `<tr><td><strong>${escape(result.algorithm_name)}</strong></td><td>${candidate(result.best_candidate)}</td><td>${candidate(result.low_stock_candidate, true)}</td><td><a href="${escape(safeUrl)}" target="_blank" rel="noopener">Открыть Top-5 и полный список</a></td></tr>`;
+        return `<tr><td><strong>${escape(result.algorithm_name)}</strong><small>${Math.round(result.elapsed_ms ?? 0)} мс</small></td><td>${candidate(result.best_candidate)}</td><td>${candidate(result.low_stock_candidate, true)}</td><td><a href="${escape(safeUrl)}" target="_blank" rel="noopener">Открыть Top-5 и полный список</a></td></tr>`;
       }).join('')}</tbody></table>`;
-      status.textContent = 'Результаты для «' + input.value.trim() + '». Процент — оценка алгоритма, а не вероятность.';
+      status.textContent = 'Результаты для «' + input.value.trim() + '» · ' + (data.execution_mode === 'parallel' ? 'Параллельно' : 'Последовательно') + ' · всего ' + Math.round(data.elapsed_ms ?? 0) + ' мс';
     } catch (error) {
       if (current === requestNumber) status.textContent = error.message || 'Не удалось выполнить поиск';
     }
   });
+  fetch('/api/matching/algorithms').then(response => response.json()).then(data => {
+    if (!requestNumber) status.textContent = data.algorithms.map(item => item.name).join(' · ') + ' · параллельный запуск';
+  }).catch(() => {});
   receiptChanged();
 })();

@@ -1,11 +1,8 @@
 import json
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from html import escape as _html_escape
 import mimetypes
 import sys
 import threading
-import time
-import uuid
-from collections import OrderedDict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
@@ -15,8 +12,10 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from App.config import WEB_HOST, WEB_PORT
-from App.services.opencode_matching import match_products_opencode_4
-from App.services.matching import match_products, match_products_sql_str_2, match_products_sql_str_3
+from App.matching.registry import ALGORITHM_REGISTRY
+from App.matching.cache import _load_full_result, clear_full_result_cache
+from App.matching.ranking import _price
+from App.matching.engine import build_algorithm_result as _build_algorithm_result, match as match_debug_payload
 
 
 BASE_DIR = Path(__file__).resolve().parents[1]
@@ -75,10 +74,7 @@ HTML_PAGE = """
             <label for="algorithm_id">Алгоритм</label>
             <select id="algorithm_id">
               <option value="all" selected>Все алгоритмы</option>
-              <option value="copilot_1">copilot_1</option>
-              <option value="sql_str_2">sql_str_2</option>
-              <option value="sql_str_3">sql_str_3</option>
-              <option value="opencode_4">opencode_4</option>
+              __ALGORITHM_OPTIONS__
             </select>
           </div>
           <div>
@@ -91,6 +87,7 @@ HTML_PAGE = """
           </div>
         </div>
 
+          <label style="display:flex;align-items:center;gap:8px;margin-top:12px;font-weight:400;"><input id="parallel-search" type="checkbox" checked style="width:auto;">Параллельный запуск алгоритмов</label>
         </details>
         <div style="margin-top: 12px; max-width: 220px;">
           <button type="submit">Проверить</button>
@@ -228,8 +225,8 @@ HTML_PAGE = """
 
         data.results_by_algorithm.forEach((algorithmResult) => {
           const algorithmId = algorithmResult && algorithmResult.algorithm_id ? algorithmResult.algorithm_id : 'unknown';
-          const candidate = algorithmResult && algorithmResult.best_candidate ? { ...algorithmResult.best_candidate, algorithm_id: algorithmId, full_results_url: algorithmResult.full_results_url } : null;
-          const lowStockCandidate = algorithmResult && algorithmResult.low_stock_candidate ? { ...algorithmResult.low_stock_candidate, algorithm_id: algorithmId, full_results_url: algorithmResult.full_results_url } : null;
+          const candidate = algorithmResult && algorithmResult.best_candidate ? { ...algorithmResult.best_candidate, algorithm_id: algorithmId, full_results_url: algorithmResult.full_results_url, elapsed_ms: algorithmResult.elapsed_ms } : null;
+          const lowStockCandidate = algorithmResult && algorithmResult.low_stock_candidate ? { ...algorithmResult.low_stock_candidate, algorithm_id: algorithmId, full_results_url: algorithmResult.full_results_url, elapsed_ms: algorithmResult.elapsed_ms } : null;
 
           if (candidate) {
             positiveRows.push(candidate);
@@ -239,7 +236,9 @@ HTML_PAGE = """
           }
         });
 
-        box.textContent = 'ТОП-1 по всем алгоритмам';
+        box.textContent = 'ТОП-1 по всем алгоритмам · ' + (data.execution_mode === 'parallel' ? 'Параллельно' : 'Последовательно') + ' · всего ' + Math.round(data.elapsed_ms ?? 0) + ' мс';
+        const unavailable = data.results_by_algorithm.filter(result => result.status !== 'ok');
+        if (unavailable.length) box.textContent += ' · ' + unavailable.map(result => result.algorithm_id + ': ' + result.error).join(' · ');
 
         container.innerHTML = `
           <div style="margin-top: 18px; border: 1px solid #d1d5db; border-radius: 8px; padding: 16px;">
@@ -260,7 +259,7 @@ HTML_PAGE = """
                 ${positiveRows.length ? positiveRows.map((candidate, index) => `
                   <tr>
                     <td>${index + 1}</td>
-                    <td>${candidate.algorithm_id || '-'}</td>
+                    <td>${candidate.algorithm_id || '-'}<div class="small">${Math.round(candidate.elapsed_ms ?? 0)} мс</div></td>
                     <td>${candidate.stock_name || '-'}</td>
                     <td>${candidate.stock_price_display ?? \'—\'}<div class="small">Отклонение: ${candidate.price_difference_display ?? \'—\'}</div></td>
                     <td>${candidate.stock_qty ?? '-'}</td>
@@ -290,7 +289,7 @@ HTML_PAGE = """
                 ${deficientRows.length ? deficientRows.map((candidate, index) => `
                   <tr>
                     <td>${index + 1}</td>
-                    <td>${candidate.algorithm_id || '-'}</td>
+                    <td>${candidate.algorithm_id || '-'}<div class="small">${Math.round(candidate.elapsed_ms ?? 0)} мс</div></td>
                     <td>${candidate.stock_name || '-'}</td>
                     <td>${candidate.stock_price_display ?? \'—\'}<div class="small">Отклонение: ${candidate.price_difference_display ?? \'—\'}</div></td>
                     <td style="color:#b91c1c; font-weight:700;">${candidate.stock_qty ?? '-'}</td>
@@ -310,18 +309,17 @@ HTML_PAGE = """
         const price = document.getElementById('query-price').value;
         const top_n = Number(document.getElementById('top_n').value || 10);
         const algorithm_id = document.getElementById('algorithm_id').value || 'all';
-        const allAlgorithms = ['copilot_1', 'sql_str_2', 'sql_str_3', 'opencode_4'];
-        const selectedAlgorithms = algorithm_id === 'all' ? allAlgorithms : [algorithm_id];
 
         if (!query) {
           document.getElementById('result-box').textContent = 'Введите название товара';
           return;
         }
 
+        document.getElementById('result-box').textContent = 'Поиск…';
         const response = await fetch('/analog', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, price, min_stock, top_n, algorithm_id: algorithm_id === 'all' ? null : algorithm_id, algorithms: selectedAlgorithms })
+          body: JSON.stringify({ query, price, min_stock, top_n, algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
         });
 
         const data = await response.json();
@@ -343,6 +341,11 @@ HTML_PAGE = """
   </body>
 </html>
 """
+
+HTML_PAGE = HTML_PAGE.replace('__ALGORITHM_OPTIONS__', '\n'.join(
+    f'<option value="{_html_escape(key, quote=True)}">{_html_escape(meta["name"])}</option>'
+    for key, meta in ALGORITHM_REGISTRY.items()
+))
 
 FULL_RESULTS_PAGE = """
 <!doctype html>
@@ -478,7 +481,7 @@ FULL_RESULTS_PAGE = """
 
           const queryText = data.query || data.checked_name || 'Полный список кандидатов';
           if (heading) {
-            heading.innerHTML = `<h2>${escapeHtml(queryText)}</h2><p class="small">Алгоритм: ${escapeHtml(algorithmId)}</p>`;
+            heading.innerHTML = `<h2>${escapeHtml(queryText)}</h2><p class="small">Алгоритм: ${escapeHtml(algorithmId)} · ${Math.round(data.elapsed_ms ?? 0)} мс</p>`;
           }
 
           container.innerHTML = data.items
@@ -497,25 +500,6 @@ FULL_RESULTS_PAGE = """
   </body>
 </html>
 """
-
-
-def _price(value):
-    """Nonnegative finite unit price; missing/invalid catalog prices are unknown."""
-    if value is None or isinstance(value, bool):
-        return None
-    try:
-        number = Decimal(str(value).replace("\u00a0", "").replace(" ", "").replace(",", "."))
-    except InvalidOperation:
-        return None
-    return number if number.is_finite() and number >= 0 else None
-
-
-def _item_price(item):
-    for key in ("price", "unit_price", "accounting_price"):
-        value = _price(item.get(key))
-        if value is not None:
-            return value
-    return None
 
 
 def load_stock_items(min_stock: int = 0):
@@ -547,225 +531,6 @@ def load_stock_items(min_stock: int = 0):
             "accounting_price": item.get("accounting_price"),
         })
     return result
-
-
-ALGORITHM_REGISTRY = {
-    "copilot_1": {
-        "id": "copilot_1",
-        "name": "copilot_1",
-        "title": "Copilot 1",
-        "description": "Стандартный алгоритм сопоставления по нормализации и сходству RapidFuzz.",
-    },
-    "sql_str_2": {
-        "id": "sql_str_2",
-        "name": "sql_str_2",
-        "title": "SQL STR 2",
-        "description": "Строгий SQL-подобный поиск по смысловым словам: вхождение ключевых слов, без артикулов и цифрового шума.",
-    },
-    "sql_str_3": {
-        "id": "sql_str_3", "name": "sql_str_3", "title": "SQL STR 3",
-        "description": "Взвешенные слова, строгие совпадения, размеры, масса, объём и модели.",
-    },
-    "opencode_4": {
-        "id": "opencode_4", "name": "opencode_4", "title": "OpenCode 4",
-        "description": "Вид товара, артикул, модель, размеры, цвет и марка по идеям анализа ошибок OpenCode.",
-    },
-}
-
-_RESULT_CACHE = OrderedDict()
-_RESULT_CACHE_LOCK = threading.Lock()
-_RESULT_CACHE_TTL_SECONDS = 3600
-_RESULT_CACHE_MAX_ENTRIES = 32
-
-
-def _store_full_result(result: dict) -> str:
-    result_id = uuid.uuid4().hex
-    stored_at = time.time()
-    with _RESULT_CACHE_LOCK:
-        _RESULT_CACHE[result_id] = (stored_at, result)
-        while len(_RESULT_CACHE) > _RESULT_CACHE_MAX_ENTRIES:
-            _RESULT_CACHE.popitem(last=False)
-    return result_id
-
-
-def _load_full_result(result_id: str):
-    if not result_id:
-        return None
-    now = time.time()
-    with _RESULT_CACHE_LOCK:
-        item = _RESULT_CACHE.get(result_id)
-        if item is None:
-            return None
-        stored_at, result = item
-        if now - stored_at > _RESULT_CACHE_TTL_SECONDS:
-            _RESULT_CACHE.pop(result_id, None)
-            return None
-        _RESULT_CACHE.move_to_end(result_id)
-        return result
-
-
-def clear_full_result_cache() -> None:
-    with _RESULT_CACHE_LOCK:
-        _RESULT_CACHE.clear()
-
-
-def _extract_query(checked_products):
-    if not checked_products:
-        return ""
-
-    for item in checked_products:
-        if not isinstance(item, dict):
-            continue
-        for key in ("query", "checked_name", "name", "product_name"):
-            value = item.get(key)
-            if value:
-                return str(value)
-    return ""
-
-
-def _build_algorithm_result(checked_products, stock_products, top_n=5, min_stock=0, algorithm_id="copilot_1"):
-    if algorithm_id == "opencode_4":
-        items = match_products_opencode_4(checked_products, stock_products, top_n=max(top_n, len(stock_products) or 0))
-    elif algorithm_id == "sql_str_3":
-        items = match_products_sql_str_3(checked_products, stock_products, top_n=max(top_n, len(stock_products) or 0))
-    elif algorithm_id == "sql_str_2":
-        items = match_products_sql_str_2(checked_products, stock_products, top_n=max(top_n, len(stock_products) or 0))
-    else:
-        items = match_products(checked_products, stock_products, top_n=max(top_n, len(stock_products) or 0))
-
-    stock_by_id = {}
-    for stock_item in stock_products:
-        stock_by_id.setdefault(str(stock_item.get("id") or stock_item.get("sku") or ""), stock_item)
-    full_candidate_lists = []
-    for entry, checked in zip(items, checked_products):
-        query_price = _item_price(checked)
-        entry["checked_price"] = float(query_price) if query_price is not None else None
-        for candidate in entry["candidates"]:
-            stock_match = stock_by_id.get(str(candidate["stock_id"]))
-            stock_price = _item_price(stock_match or {})
-            candidate["stock_price"] = float(stock_price) if stock_price is not None else None
-            difference = abs(stock_price - query_price) if stock_price is not None and query_price is not None else None
-            candidate["price_difference"] = float(difference) if difference is not None else None
-            candidate["stock_price_display"] = str(stock_price.quantize(Decimal("1"), rounding=ROUND_HALF_UP)) if stock_price is not None else "—"
-            percent = difference / query_price * 100 if difference is not None and query_price else (Decimal(0) if difference == 0 else None)
-            candidate["price_difference_pct"] = float(percent) if percent is not None else None
-            candidate["price_difference_display"] = str(percent.quantize(Decimal("1"), rounding=ROUND_HALF_UP)) + "%" if percent is not None else "—"
-            if stock_match is not None:
-                candidate["stock_qty"] = (
-                    stock_match.get("quantity")
-                    or stock_match.get("stock_quantity")
-                    or stock_match.get("qty")
-                )
-
-        # Price only breaks ties in the displayed name-similarity score.
-        entry["candidates"].sort(key=lambda candidate: (
-            -candidate["similarity_pct"],
-            candidate["price_difference"] is None if query_price is not None else False,
-            abs(_item_price(stock_by_id.get(str(candidate["stock_id"]), {})) - query_price)
-                if query_price is not None and candidate["price_difference"] is not None else Decimal(0),
-            str(candidate["stock_id"]),
-        ))
-        all_candidates = list(entry["candidates"])
-        if min_stock:
-            full_main_candidates = [
-                candidate
-                for candidate in all_candidates
-                if float(candidate.get("stock_qty") or 0) >= float(min_stock)
-            ]
-        else:
-            full_main_candidates = list(all_candidates)
-
-        main_candidates = full_main_candidates[:top_n]
-
-        cutoff_score = None
-        if main_candidates:
-            cutoff_score = min(candidate.get("similarity_pct", 0) for candidate in main_candidates)
-
-        excluded_candidates = []
-        for candidate in all_candidates:
-            qty = float(candidate.get("stock_qty") or 0)
-            if qty < float(min_stock) if min_stock else False:
-                if cutoff_score is None or float(candidate.get("similarity_pct") or 0) >= float(cutoff_score):
-                    excluded_candidates.append(candidate)
-
-        full_excluded_candidates = list(excluded_candidates)
-        entry["candidates"] = main_candidates
-        entry["excluded_candidates"] = full_excluded_candidates[:top_n]
-
-        entry["algorithm_id"] = algorithm_id
-        entry["algorithm_name"] = ALGORITHM_REGISTRY.get(algorithm_id, {}).get("name", algorithm_id)
-        entry["query"] = _extract_query(checked_products)
-        entry["best_candidate"] = main_candidates[0] if main_candidates else None
-        entry["low_stock_candidate"] = excluded_candidates[0] if excluded_candidates else None
-        full_candidate_lists.append((full_main_candidates, full_excluded_candidates))
-
-    first_best = None
-    for entry in items:
-        if entry.get("best_candidate"):
-            first_best = entry["best_candidate"]
-            break
-
-    query_value = _extract_query(checked_products)
-    result = {
-        "status": "ok",
-        "top_n": top_n,
-        "algorithm_id": algorithm_id,
-        "algorithm_name": ALGORITHM_REGISTRY.get(algorithm_id, {}).get("name", algorithm_id),
-        "algorithm_title": ALGORITHM_REGISTRY.get(algorithm_id, {}).get("title", algorithm_id),
-        "description": ALGORITHM_REGISTRY.get(algorithm_id, {}).get("description", ""),
-        "query": query_value,
-        "items": items,
-        "best_candidate": first_best,
-        "low_stock_candidate": next((candidate for entry in items for candidate in entry.get("excluded_candidates", []) if candidate), None),
-    }
-    full_items = []
-    for entry, (full_main, full_excluded) in zip(items, full_candidate_lists):
-        full_entry = dict(entry)
-        full_entry["candidates"] = full_main
-        full_entry["excluded_candidates"] = full_excluded
-        full_items.append(full_entry)
-
-    full_result = {**result, "items": full_items}
-    result_id = _store_full_result(full_result)
-    result["full_results_url"] = f"/analog/list?algorithm_id={quote(algorithm_id)}&result_id={quote(result_id)}"
-    return result
-
-
-def match_debug_payload(checked_products, stock_products, top_n=5, min_stock=0, algorithm_id="copilot_1", algorithms=None):
-    if algorithms is None:
-        if algorithm_id in (None, "", "all"):
-            selected_algorithms = list(ALGORITHM_REGISTRY)
-        else:
-            selected_algorithms = [algorithm_id]
-    else:
-        selected_algorithms = list(algorithms)
-
-    if not selected_algorithms:
-        selected_algorithms = list(ALGORITHM_REGISTRY)
-
-    results = [
-        _build_algorithm_result(checked_products, stock_products, top_n=top_n, min_stock=min_stock, algorithm_id=current_algorithm)
-        for current_algorithm in selected_algorithms
-    ]
-
-    primary = results[0] if results else {"status": "ok", "items": [], "algorithm_id": "copilot_1", "best_candidate": None}
-    query_value = _extract_query(checked_products)
-    fallback_query = primary.get("query") if primary else ""
-    if not fallback_query and primary and primary.get("items"):
-        fallback_query = primary.get("items", [{}])[0].get("checked_name") or ""
-
-    payload = {
-        "status": "ok",
-        "top_n": top_n,
-        "algorithm_id": primary.get("algorithm_id", algorithm_id or "copilot_1"),
-        "algorithm_name": primary.get("algorithm_name", algorithm_id or "copilot_1"),
-        "query": query_value or fallback_query,
-        "best_candidate": primary.get("best_candidate"),
-        "items": primary.get("items", []),
-        "results_by_algorithm": results,
-        "low_stock_candidate": primary.get("low_stock_candidate"),
-    }
-    return payload
 
 
 class MatchingDebugHandler(BaseHTTPRequestHandler):
@@ -803,6 +568,14 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/matching/algorithms":
+            data = json.dumps({"algorithms": list(ALGORITHM_REGISTRY.values()), "parallel_default": True}, ensure_ascii=False).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/":
             self._serve_static("/index.html")
             return
@@ -910,7 +683,16 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
         if not stock:
             stock = load_stock_items(min_stock=0)
 
-        result = match_debug_payload(checked, stock, top_n=top_n, min_stock=min_stock, algorithm_id=algorithm_id, algorithms=algorithms)
+        try:
+            result = match_debug_payload(checked, stock, top_n=top_n, min_stock=min_stock,
+                                         algorithm_id=algorithm_id, algorithms=algorithms,
+                                         parallel=payload.get("parallel", True))
+        except ValueError as error:
+            self.send_response(400)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.end_headers()
+            self.wfile.write(json.dumps({"error": str(error)}, ensure_ascii=False).encode("utf-8"))
+            return
         self.send_response(200)
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.end_headers()
@@ -931,6 +713,8 @@ def run_debug_server(host: str | None = None, port: int | None = None):
     finally:
         server.server_close()
         server.store.pool.shutdown(wait=True)
+        from App.matching.cpu_executor import shutdown_executors
+        shutdown_executors()
 
 
 if __name__ == "__main__":

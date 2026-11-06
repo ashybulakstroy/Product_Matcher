@@ -15,7 +15,7 @@ from App.web_server import create_server
 
 def test_combined_server_serves_receipt_and_matching_routes(server):
     _, base = server
-    for path in ('/', '/matching_compare.js', '/matching_compare.css', '/api/health', '/api/catalog?q=', '/api/1c/stock-sync/summary', '/analog', '/health'):
+    for path in ('/', '/matching_compare.js', '/matching_compare.css', '/api/matching/algorithms', '/api/health', '/api/catalog?q=', '/api/1c/stock-sync/summary', '/analog', '/health'):
         with urllib.request.urlopen(base + path, timeout=10) as response:
             assert response.status == 200
             assert response.read()

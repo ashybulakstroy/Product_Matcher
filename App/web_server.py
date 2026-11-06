@@ -885,7 +885,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
     class CombinedHandler(Handler, MatchingDebugHandler):
         def do_GET(self):
             path = urlparse(self.path).path
-            if path in {'/analog', '/analog/list', '/analog/list/data', '/health'}:
+            if path in {'/analog', '/analog/list', '/analog/list/data', '/health', '/api/matching/algorithms'}:
                 self.close_connection = True
                 return MatchingDebugHandler.do_GET(self)
             return super().do_GET()
@@ -924,6 +924,8 @@ def main():
     finally:
         server.server_close()
         server.store.pool.shutdown(wait=True)
+        from App.matching.cpu_executor import shutdown_executors
+        shutdown_executors()
 
 
 if __name__ == "__main__":

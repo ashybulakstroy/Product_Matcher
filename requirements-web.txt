@@ -14,3 +14,5 @@ xlrd==2.0.2
 reportlab==5.1.0
 num2words==0.5.14
 pypdf==6.21.4
+# Local multilingual semantic search (ONNX Runtime is shared with OCR).
+tokenizers==0.23.3
