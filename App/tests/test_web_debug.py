@@ -113,3 +113,29 @@ def test_price_search_filters_literal_name_price_and_stock_without_top_limit():
               dict(name='Кабель', accounting_price=12, quantity=1)]
     result = price_search('КАБЕЛЬ', 5, stock, 3)
     assert [item['accounting_price'] for item in result['items']] == list(range(5, 21))
+
+
+def test_price_search_without_name_returns_all_names_from_inclusive_floor():
+    from App.web_debug import price_search
+    stock=[dict(id='a',name='Кабель',accounting_price=120,quantity=5),
+           dict(id='b',name='Болт',accounting_price=100,quantity=5),
+           dict(id='c',name='Гайка',accounting_price=99,quantity=5),
+           dict(id='d',name='Провод',accounting_price=None,quantity=5),
+           dict(id='e',name='Шайба',accounting_price=110,quantity=1)]
+    assert [item['id'] for item in price_search('',100,stock,3)['items']]==['b','a']
+    assert [item['id'] for item in price_search('кабель',100,stock,3)['items']]==['a']
+
+
+def test_price_catalog_pages_are_sorted_bounded_and_json_serializable():
+    from decimal import Decimal
+    import json
+    from App.web_debug import price_catalog_page
+    stock=[dict(id=str(i), name='item', accounting_price=Decimal(i), quantity=Decimal('3.25'),
+                stock_quantity=Decimal('3.25')) for i in range(250,0,-1)]
+    pages=[price_catalog_page('', 10, stock, 3.25, page) for page in (1,2,3)]
+    assert [len(page['items']) for page in pages]==[100,100,41]
+    assert all(page['total']==241 and page['pages']==3 for page in pages)
+    ids=[int(item['id']) for page in pages for item in page['items']]
+    assert ids==list(range(10,251))
+    json.dumps(pages)
+    assert price_catalog_page('', 10, stock, 4)['total']==0

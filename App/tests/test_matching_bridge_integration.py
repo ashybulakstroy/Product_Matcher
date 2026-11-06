@@ -177,3 +177,20 @@ def test_equal_scores_prefer_smaller_displayed_tax_difference():
              dict(id='unknown', score=90, accounting_price=None)]
     assert [item['id'] for item in sort_candidate_ties(items, 100)] == ['higher_score', 'above', 'below', 'unknown']
     assert sort_candidate_ties(items, None) == items
+
+
+def test_price_only_endpoint_uses_job_stock_without_matching(bridge_server, monkeypatch):
+    from App import web_debug
+    def forbidden(*args, **kwargs):
+        raise AssertionError('Matching must not run during stock price browsing')
+    monkeypatch.setattr(web_debug, 'match_debug_payload', forbidden)
+    instance, base, jobs = bridge_server
+    request = urllib.request.Request(base+'/analog', data=json.dumps(dict(query='', price='50',
+        price_search=True, min_stock=2, job_id=jobs['base-A'], page=1)).encode(),
+        headers={'Content-Type':'application/json'})
+    with urllib.request.urlopen(request,timeout=20) as response:
+        data=json.load(response)
+    assert data['total']==1 and len(data['items'])==1
+    assert data['page_size']==100 and data['results_by_algorithm']==[]
+    assert data['items'][0]['name']=='Кабель медный'
+    assert float(data['items'][0]['accounting_price'])==50

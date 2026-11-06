@@ -70,7 +70,7 @@ HTML_PAGE = """
             <input id="min_stock" type="number" min="0" value="3" />
           </div>
         </div>
-        <label style="margin-top:12px;font-weight:400"><input type="checkbox" id="price-search" style="width:auto"> По цене: от указанной цены, по возрастанию; название содержит строку поиска</label>
+        <label style="margin-top:12px;font-weight:400"><input type="checkbox" id="price-search" style="width:auto"> По цене: от указанной цены и выше, по возрастанию. Название необязательно.</label>
         <details style="margin-top:14px; border:1px solid #d1d5db; border-radius:8px; padding:10px 12px;">
           <summary style="cursor:pointer; color:#51617b;">Настройки поиска</summary>
           <div class="form-grid" style="margin-top:12px; grid-template-columns:1fr 1fr;">
@@ -311,6 +311,33 @@ HTML_PAGE = """
         `;
       }
 
+      function renderPricePage(data,filters){
+        const host=document.getElementById('algorithm-results');host.replaceChildren();
+        const section=document.createElement('section');
+        const title=document.createElement('h3');title.textContent='Таблица 1. Товары из остатков по цене';section.append(title);
+        const table=document.createElement('table');table.id='price-results-table';
+        const header=table.createTHead().insertRow();
+        for(const text of ['№','Товар 1С','Цена за единицу (1С)','Остаток',...(window.AnalogPicker?['Выбрать']:[])]){const th=document.createElement('th');th.textContent=text;header.append(th);}
+        const body=table.createTBody();
+        for(const [index,item] of data.items.entries()){
+          const row=body.insertRow();
+          for(const value of [(data.page-1)*100+index+1,item.name,Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';
+          if(window.AnalogPicker){const button=document.createElement('button');button.textContent='Выбрать';button.addEventListener('click',()=>window.AnalogPicker.choose(item.id));row.insertCell().append(button);}
+        }
+        section.append(table);
+        const nav=document.createElement('nav');nav.setAttribute('aria-label','Страницы результатов поиска');nav.style='display:flex;align-items:center;gap:12px;margin:16px 0;flex-wrap:wrap';
+        const previous=document.createElement('button');previous.type='button';previous.textContent='← Назад';previous.disabled=data.page<=1;previous.style.width='auto';previous.onclick=()=>runMatch(data.page-1,filters);
+        const label=document.createElement('span');label.textContent=`Страница ${data.page} из ${data.pages} · Всего товаров: ${data.total} · По 100 на странице`;
+        const select=document.createElement('select');select.setAttribute('aria-label','Перейти на страницу');select.style.width='auto';
+        for(let page=1;page<=data.pages;page++)select.add(new Option(String(page),String(page),false,page===data.page));
+        select.onchange=()=>runMatch(Number(select.value),filters);
+        const next=document.createElement('button');next.type='button';next.textContent='Вперёд →';next.disabled=data.page>=data.pages;next.style.width='auto';next.onclick=()=>runMatch(data.page+1,filters);
+        nav.append(previous,label,select,next);section.append(nav);host.append(section);
+        const excluded=document.createElement('section');const excludedTitle=document.createElement('h3');excludedTitle.textContent='Таблица 2. Дефициты / недостаточный остаток';excluded.append(excludedTitle);
+        const empty=document.createElement('table');empty.id='price-excluded-table';empty.createTBody();excluded.append(empty);host.append(excluded);
+        document.getElementById('result-box').textContent='Найдено: '+data.total+' · Прямой отбор из остатков, без алгоритмов аналогов';
+      }
+
       const pickerToken=new URLSearchParams(location.search).get('picker');
       if(pickerToken){
         const channel=new BroadcastChannel('invoice-analog-'+pickerToken);
@@ -328,21 +355,22 @@ HTML_PAGE = """
         };
       }
       let searchBusy=false;
-      async function runMatch() {
+      async function runMatch(pageNumber=1,savedFilters=null) {
         if(searchBusy)return;
-        const query = document.getElementById('query').value.trim();
-        const min_stock = Number(document.getElementById('min_stock').value || 0);
-        const price = document.getElementById('query-price').value;
+        const query = savedFilters?savedFilters.query:document.getElementById('query').value.trim();
+        const min_stock = savedFilters?savedFilters.min_stock:Number(document.getElementById('min_stock').value || 0);
+        const price = savedFilters?savedFilters.price:document.getElementById('query-price').value;
+        const priceMode=savedFilters?true:document.getElementById('price-search').checked;
         const top_n = Number(document.getElementById('top_n').value || 10);
         const algorithm_id = document.getElementById('algorithm_id').value || 'all';
 
-        if (!query) {
+        if (!query && !priceMode) {
           document.getElementById('result-box').textContent = 'Введите название товара';
           return;
         }
 
         window.VotingSummary?.clear();
-        if(document.getElementById('price-search').checked && price===''){
+        if(priceMode && price===''){
           document.getElementById('result-box').textContent='Укажите начальную цену';return;
         }
         searchBusy=true;
@@ -353,20 +381,13 @@ HTML_PAGE = """
         const response = await fetch('/analog', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, price, min_stock, top_n, price_search:document.getElementById('price-search').checked, job_id:new URLSearchParams(location.search).get('job_id'), algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
+          body: JSON.stringify({ query, price, min_stock, top_n, price_search:priceMode, page:pageNumber, job_id:new URLSearchParams(location.search).get('job_id'), algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
         });
 
         const data = await response.json();
         if(!response.ok){document.getElementById('result-box').textContent=data.error||'Ошибка поиска';return;}
         if(data.price_search){
-          document.getElementById('algorithm-results').replaceChildren();
-          const table=document.createElement('table');
-          const header=table.createTHead().insertRow();
-          for(const text of ['Товар 1С','Цена','Остаток',...(window.AnalogPicker?['Выбрать']:[])]){const th=document.createElement('th');th.textContent=text;header.append(th);}
-          const body=table.createTBody();
-          for(const item of data.items){const row=body.insertRow();for(const value of [item.name,item.accounting_price==null?'—':Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';if(window.AnalogPicker){const button=document.createElement('button');button.textContent='Выбрать';button.addEventListener('click',()=>window.AnalogPicker.choose(item.id));row.insertCell().append(button);}}
-          document.getElementById('algorithm-results').append(table);
-          document.getElementById('result-box').textContent='Найдено: '+data.items.length;return;
+          renderPricePage(data,{query,price,min_stock});return;
         }
         window.VotingSummary?.render(data.voting, data.results_by_algorithm);
         renderTable(data);
@@ -594,8 +615,6 @@ def price_search(query, minimum_price, stock, min_stock=0):
     if floor is None:
         raise ValueError('Укажите неотрицательную начальную цену')
     query = str(query or '').strip().casefold()
-    if not query:
-        raise ValueError('Введите название товара')
     items = [item for item in stock
              if query in str(item.get('name') or '').casefold()
              and _price(item.get('accounting_price')) is not None
@@ -603,6 +622,22 @@ def price_search(query, minimum_price, stock, min_stock=0):
              and float(item.get('quantity') or 0) >= min_stock]
     items.sort(key=lambda item: (_price(item['accounting_price']), str(item.get('name') or '').casefold()))
     return dict(price_search=True, items=items)
+
+
+def price_catalog_page(query, minimum_price, stock, min_stock=0, page=1):
+    if isinstance(page, bool) or not isinstance(page, int) or page < 1:
+        raise ValueError('Номер страницы должен быть положительным целым числом')
+    result = price_search(query, minimum_price, stock, min_stock)
+    total = len(result['items'])
+    pages = max(1, (total + 99) // 100)
+    page = min(page, pages)
+    # Only portable fields of the current page cross the JSON boundary.
+    from App.invoicing.invoice_service import _plain
+    items = [dict(id=item.get('id'), name=item.get('name'),
+                  accounting_price=item.get('accounting_price'), quantity=item.get('quantity'))
+             for item in result['items'][(page-1)*100:page*100]]
+    return dict(price_search=True, items=_plain(items), total=total, page=page,
+                page_size=100, pages=pages, results_by_algorithm=[])
 
 
 class MatchingDebugHandler(BaseHTTPRequestHandler):
@@ -759,7 +794,7 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
                                 for item in index['items']]
         if payload.get('price_search'):
             try:
-                result = price_search(query, payload.get('price'), scoped_stock if scoped_stock is not None else load_stock_items(), min_stock)
+                result = price_catalog_page(query, payload.get('price'), scoped_stock if scoped_stock is not None else load_stock_items(), min_stock, payload.get('page', 1))
             except ValueError as error:
                 result = {'error': str(error)}
             data = json.dumps(result, ensure_ascii=False).encode('utf-8')
