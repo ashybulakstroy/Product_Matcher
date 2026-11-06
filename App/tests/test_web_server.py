@@ -15,7 +15,7 @@ from App.web_server import create_server
 
 def test_combined_server_serves_receipt_and_matching_routes(server):
     _, base = server
-    for path in ('/', '/matching_compare.js', '/matching_compare.css', '/api/matching/algorithms', '/api/health', '/api/catalog?q=', '/api/1c/stock-sync/summary', '/analog', '/health'):
+    for path in ('/', '/matching_compare.js', '/matching_compare.css', '/voting.js', '/api/matching/algorithms', '/api/health', '/api/catalog?q=', '/api/1c/stock-sync/summary', '/analog', '/health'):
         with urllib.request.urlopen(base + path, timeout=10) as response:
             assert response.status == 200
             assert response.read()
@@ -26,6 +26,8 @@ def test_combined_server_serves_receipt_and_matching_routes(server):
     with urllib.request.urlopen(request, timeout=10) as response:
         result = json.load(response)
     assert result['best_candidate']['stock_id'] == 's1'
+    assert result['voting']['positions'][0]['recommended_stock_id'] == 's1'
+    assert result['voting_elapsed_ms'] >= 0
     url = result['results_by_algorithm'][0]['full_results_url']
     with urllib.request.urlopen(base + url, timeout=10) as response:
         assert response.read()

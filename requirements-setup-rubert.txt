@@ -1,0 +1,11 @@
+# One-time OFFLINE/CPU ONNX export step only; do not load at app runtime.
+# Existing project already has numpy, tokenizers and onnxruntime.
+torch>=2.2
+transformers>=4.40,<5
+onnx>=1.16
+safetensors>=0.4
+huggingface-hub>=0.23
+
+# Also needed when exporting in a separate, minimal virtual environment.
+onnxruntime>=1.20
+tokenizers>=0.22

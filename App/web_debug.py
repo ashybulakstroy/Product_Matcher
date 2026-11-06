@@ -230,6 +230,8 @@ HTML_PAGE = """
 
           if (candidate) {
             positiveRows.push(candidate);
+          } else if (algorithmResult.status === 'ok') {
+            positiveRows.push({algorithm_id: algorithmId, elapsed_ms: algorithmResult.elapsed_ms, no_match: true});
           }
           if (lowStockCandidate) {
             deficientRows.push(lowStockCandidate);
@@ -260,11 +262,13 @@ HTML_PAGE = """
                   <tr>
                     <td>${index + 1}</td>
                     <td>${candidate.algorithm_id || '-'}<div class="small">${Math.round(candidate.elapsed_ms ?? 0)} мс</div></td>
+                    ${candidate.no_match ? '<td colspan="5" class="small">Нет кандидатов с достаточным остатком</td>' : `
                     <td>${candidate.stock_name || '-'}</td>
                     <td>${candidate.stock_price_display ?? \'—\'}<div class="small">Отклонение: ${candidate.price_difference_display ?? \'—\'}</div></td>
                     <td>${candidate.stock_qty ?? '-'}</td>
                     <td>${candidate.similarity_pct ?? '-'}</td>
                     <td><a href="${candidate.full_results_url || '#'}">Открыть</a></td>
+                    `}
                   </tr>
                 `).join('') : '<tr><td colspan="7" class="small">Нет положительных кандидатов</td></tr>'}
               </tbody>
@@ -315,6 +319,7 @@ HTML_PAGE = """
           return;
         }
 
+        window.VotingSummary?.clear();
         document.getElementById('result-box').textContent = 'Поиск…';
         const response = await fetch('/analog', {
           method: 'POST',
@@ -323,6 +328,7 @@ HTML_PAGE = """
         });
 
         const data = await response.json();
+        window.VotingSummary?.render(data.voting, data.results_by_algorithm);
         renderTable(data);
       }
 
@@ -338,6 +344,7 @@ HTML_PAGE = """
         }
       });
     </script>
+    <script src="/voting.js"></script>
   </body>
 </html>
 """

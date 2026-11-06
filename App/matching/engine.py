@@ -9,6 +9,7 @@ from App.matching.cpu_executor import submit_algorithm
 from App.matching.ranking import rank_result
 from App.matching.registry import get_algorithm, select_algorithms
 from App.matching.worker import run_algorithm
+from App.matching.voting import aggregate_votes
 
 
 def _complete(spec, run, checked, stock, top_n, min_stock):
@@ -60,10 +61,12 @@ def match(checked_products, stock_products, top_n=5, min_stock=0,
         runs = [run_algorithm(spec, checked, stock, limit) for spec in specs]
     for spec, run in zip(specs, runs):
         results.append(_complete(spec, run, checked, stock, top_n, min_stock))
+    voting = aggregate_votes(checked, results)
     primary = results[0]
     return dict(status='ok', top_n=top_n, algorithm_id=primary['algorithm_id'],
                 algorithm_name=primary['algorithm_name'], query=extract_query(checked),
                 best_candidate=primary.get('best_candidate'), items=primary.get('items', []),
                 low_stock_candidate=primary.get('low_stock_candidate'), results_by_algorithm=results,
+                voting=voting, voting_elapsed_ms=voting['elapsed_ms'],
                 execution_mode='parallel' if parallel else 'sequential',
                 elapsed_ms=round((perf_counter() - started) * 1000, 2))

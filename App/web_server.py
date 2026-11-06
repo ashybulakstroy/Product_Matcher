@@ -619,7 +619,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
             parts = urlparse(self.path)
             path = unquote(parts.path)
             if path in {"/", "/index.html", "/app.js", "/styles.css", "/editing.css", "/ocr_activity.js", "/ocr_activity.css",
-                        "/invoice.js", "/invoice.css", "/matching_compare.js", "/matching_compare.css"}:
+                        "/invoice.js", "/invoice.css", "/matching_compare.js", "/matching_compare.css", "/voting.js"}:
                 filename = "index.html" if path == "/" else path.lstrip("/")
                 mime = {"html":"text/html", "js":"text/javascript", "css":"text/css"}[filename.split(".")[-1]]
                 return self.send_data((STATIC / filename).read_bytes(), mime+"; charset=utf-8")

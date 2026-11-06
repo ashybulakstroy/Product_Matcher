@@ -34,6 +34,7 @@
   form.addEventListener('submit', async event => {
     event.preventDefault();
     const current = ++requestNumber;
+    window.VotingSummary?.clear();
     status.textContent = 'Запускаем алгоритмы параллельно… Первый расчёт каталога может занять несколько минут.';
     output.replaceChildren();
     try {
@@ -45,6 +46,8 @@
       if (!response.ok) throw Error('Ошибка поиска: ' + response.status);
       const data = await response.json();
       if (current !== requestNumber) return;
+      window.VotingSummary?.render(data.voting, data.results_by_algorithm,
+                                    {anchorId: 'matching-comparison-results'});
       output.innerHTML = `<table><thead><tr><th>Алгоритм</th><th>Лучший кандидат</th><th>Недостаточный остаток</th><th>Все кандидаты</th></tr></thead><tbody>${data.results_by_algorithm.map(result => {
         if (result.status !== 'ok') return `<tr><td><strong>${escape(result.algorithm_name)}</strong><small>${Math.round(result.elapsed_ms ?? 0)} мс</small></td><td colspan="3">${escape(result.error)}</td></tr>`;
         const url = result.full_results_url;

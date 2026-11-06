@@ -47,6 +47,54 @@ ALGORITHMS = {
         function='match_products_semantic_5',
         execution='shared_model',
     ),
+    'exact_normalized': AlgorithmSpec(
+        id='exact_normalized', name='exact_normalized', title='Exact / Normalized Match',
+        description='Только точное равенство после нормализации CPU Matching-6; без совпадения кандидатов нет.',
+        module='App.matching.algorithms.fuzzy.exact_normalized',
+        function='match_products_exact_normalized',
+    ),
+    'token_sort': AlgorithmSpec(
+        id='token_sort', name='token_sort', title='Token Sort Ratio',
+        description='Самостоятельный Token Sort Ratio с нормализацией CPU Matching-6; порядок слов не важен.',
+        module='App.matching.algorithms.fuzzy.token_sort',
+        function='match_products_token_sort',
+    ),
+    'token_set': AlgorithmSpec(
+        id='token_set', name='token_set', title='Token Set Ratio',
+        description='Сравнение множеств слов RapidFuzz; допускает дополнительные слова в названии.',
+        module='App.matching.algorithms.fuzzy.token_set',
+        function='match_products_token_set',
+    ),
+    'levenshtein': AlgorithmSpec(
+        id='levenshtein', name='levenshtein', title='Levenshtein',
+        description='Нормированное расстояние Левенштейна: вставки, удаления и замены символов.',
+        module='App.matching.algorithms.fuzzy.levenshtein',
+        function='match_products_levenshtein',
+    ),
+    'jaro_winkler': AlgorithmSpec(
+        id='jaro_winkler', name='jaro_winkler', title='Jaro-Winkler',
+        description='Символьная близость Jaro-Winkler с учётом общего начала строки.',
+        module='App.matching.algorithms.fuzzy.jaro_winkler',
+        function='match_products_jaro_winkler',
+    ),
+    'jaccard': AlgorithmSpec(
+        id='jaccard', name='jaccard', title='Jaccard',
+        description='Доля пересечения множеств слов относительно их объединения; без общих слов кандидатов нет.',
+        module='App.matching.algorithms.fuzzy.jaccard',
+        function='match_products_jaccard',
+    ),
+    'semantic_rubert_12': AlgorithmSpec(
+        id='semantic_rubert_12', name='semantic_rubert_12', title='RuBERT Tiny2',
+        description='Русскоязычный смысловой поиск RuBERT Tiny2: CLS, 312 измерений, локальный ONNX CPU.',
+        module='App.matching.algorithms.semantic.rubert_12',
+        function='match_products_semantic_rubert_12', execution='shared_model',
+    ),
+    'semantic_minilm_13': AlgorithmSpec(
+        id='semantic_minilm_13', name='semantic_minilm_13', title='Multilingual MiniLM L12',
+        description='Многоязычный смысловой поиск MiniLM L12: masked mean, 384 измерения, локальный ONNX CPU.',
+        module='App.matching.algorithms.semantic.minilm_13',
+        function='match_products_semantic_minilm_13', execution='shared_model',
+    ),
 }
 
 ALGORITHM_REGISTRY = {key: spec.metadata() for key, spec in ALGORITHMS.items()}
