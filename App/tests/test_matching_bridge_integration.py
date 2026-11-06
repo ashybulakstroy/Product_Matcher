@@ -140,14 +140,40 @@ def test_invoice_candidates_skip_matcher_for_confirmed_or_strong_search(monkeypa
     monkeypatch.setattr(invoice_service, 'resolve_source', lambda *args: dict(status='missing'))
     monkeypatch.setattr(catalog_1c, 'catalog_item', lambda *args: None)
     monkeypatch.setattr(catalog_1c, 'search_catalog', lambda *args, **kwargs:
-        dict(items=[dict(id='ordinary', name='Кабель медный', score=95)], errors=[]))
+        dict(items=[dict(id='ordinary', name='Кабель медный', score=95, stock_quantity='2')], errors=[]))
     def fail(*args, **kwargs):
         raise AssertionError('Optional matcher must not run')
     monkeypatch.setattr(matching_bridge, 'vote_candidates', fail)
     monkeypatch.setattr(generation, 'confirmed_candidates', lambda *args: [])
     assert invoice_service._row_candidates(row)['items'][0]['id'] == 'ordinary'
     monkeypatch.setattr(catalog_1c, 'search_catalog', lambda *args, **kwargs: dict(items=[], errors=[]))
-    monkeypatch.setattr(generation, 'confirmed_candidates', lambda *args: [dict(id='confirmed')])
+    monkeypatch.setattr(generation, 'confirmed_candidates', lambda *args: [dict(id='confirmed', stock_quantity='2')])
     assert invoice_service._row_candidates(row)['remembered'][0]['id'] == 'confirmed'
     monkeypatch.setattr(generation, 'confirmed_candidates', lambda *args: [])
     assert not invoice_service._row_candidates(row, allow_analog_fallback=False)['items']
+
+
+def test_stock_filter_uses_exact_receipt_quantity_and_excludes_unknown():
+    from App.invoicing.invoice_service import sufficient_stock
+    assert sufficient_stock({'stock_quantity': '3.25'}, '3.25')
+    assert not sufficient_stock({'stock_quantity': '3.24'}, '3.25')
+    for stock in (None, 'NaN', 'Infinity', '0', '-1'):
+        assert not sufficient_stock({'stock_quantity': stock}, '2')
+
+
+def test_manual_search_filters_before_limit(monkeypatch):
+    monkeypatch.setattr(catalog_1c, 'catalog', lambda *args, **kwargs: {'items': [1,2,3]})
+    monkeypatch.setattr(catalog_1c, 'search_catalog', lambda *args, **kwargs: dict(items=[
+        dict(id='low', stock_quantity='1'), dict(id='ok', stock_quantity='4.5')], errors=[]))
+    result = invoice_service.search_catalog_1c.__wrapped__('test', limit=1, required_quantity='4.5')
+    assert [item['id'] for item in result['items']] == ['ok']
+
+
+def test_equal_scores_prefer_smaller_displayed_tax_difference():
+    from App.invoicing.catalog_1c import sort_candidate_ties
+    items = [dict(id='higher_score', score=99, accounting_price=10),
+             dict(id='below', score=90, accounting_price=80),
+             dict(id='above', score=90, accounting_price=120),
+             dict(id='unknown', score=90, accounting_price=None)]
+    assert [item['id'] for item in sort_candidate_ties(items, 100)] == ['higher_score', 'above', 'below', 'unknown']
+    assert sort_candidate_ties(items, None) == items

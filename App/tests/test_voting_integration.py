@@ -23,13 +23,13 @@ def test_voting_unique_leader_and_parallel_sequential_equivalence():
     assert parallel['best_candidate'] == parallel['results_by_algorithm'][0]['best_candidate']
 
 
-def test_voting_tie_does_not_change_legacy_primary_candidate():
+def test_equal_votes_prefer_closer_price_without_changing_primary_algorithm():
     result = _search(['exact_normalized', 'token_set'])
     position = result['voting']['positions'][0]
-    assert position['is_tie']
-    assert position['recommended_stock_id'] is None
+    assert not position['is_tie']
+    assert position['recommended_stock_id'] == '0002'
     assert position['selected_stock_id'] is None
-    assert position['leader_stock_ids'] == ['0001', '0002']
+    assert position['leader_stock_ids'] == ['0002']
     assert result['best_candidate']['stock_id'] == '0001'
 
 
@@ -42,3 +42,12 @@ def test_stock_filter_is_applied_before_voting():
     assert position['voting_algorithms'] == 1
     assert position['recommended_stock_id'] == 'ready'
     assert result['results_by_algorithm'][0]['low_stock_candidate']['stock_id'] == 'low'
+
+
+def test_equal_votes_and_equal_prices_remain_tie():
+    from App.matching.voting import aggregate_votes
+    results = [dict(status='ok', algorithm_id=identity, items=[dict(position_no=1,
+        best_candidate=dict(stock_id=identity, stock_name=identity, stock_price=100))]) for identity in ('a','b')]
+    position = aggregate_votes([{'name':'bolt','price':100}], results)['positions'][0]
+    assert position['is_tie']
+    assert position['recommended_stock_id'] is None

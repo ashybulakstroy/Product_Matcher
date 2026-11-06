@@ -287,7 +287,7 @@ def build_generation(receipt, selections=None, suggest=False, database_id=None, 
         row.update(row_id=row_id, source_index=index, source_name=source_name,
                    source_quantity=str(source["quantity"]), source_price=str(source["price"]), source_amount=str(net[index]))
         if suggest and not row["name"] and not selection:
-            product = suggest_catalog(source_name, source.get('article'))
+            product = suggest_catalog(source_name, source.get('article'), receipt_price=str(source.get('price') or ''))
             if product:
                 service = product.get("service", product["unit"].rstrip(".") == "усл")
                 quantity = Decimal(1) if service else Decimal(row["quantity"])

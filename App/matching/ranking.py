@@ -22,6 +22,24 @@ def _item_price(item):
     return None
 
 
+def price_distance(stock_price, query_price):
+    stock_price, query_price = _price(stock_price), _price(query_price)
+    if stock_price is None or query_price is None:
+        return None
+    if stock_price == query_price:
+        return Decimal(0)
+    return abs(stock_price-query_price)/stock_price if stock_price else Decimal('Infinity')
+
+
+def candidate_rank_key(candidate, query_price):
+    score = Decimal(str(candidate['similarity_pct']))
+    distance = price_distance(candidate.get('stock_price'), query_price)
+    # A bounded penalty cannot overcome a name-score gap of 3 or more.
+    penalty = (Decimal(3)*distance/(1+distance) if distance is not None and distance.is_finite() else Decimal(3)) if query_price is not None else Decimal(0)
+    return (-(score-penalty), -score, distance is None,
+            distance if distance is not None else Decimal(0), str(candidate['stock_id']))
+
+
 def rank_result(items, checked_products, stock_products, spec, top_n=5, min_stock=0):
     algorithm_id = spec.id
     stock_by_id = {}
@@ -48,14 +66,8 @@ def rank_result(items, checked_products, stock_products, spec, top_n=5, min_stoc
                     or stock_match.get("qty")
                 )
 
-        # Price only breaks ties in the displayed name-similarity score.
-        entry["candidates"].sort(key=lambda candidate: (
-            -candidate["similarity_pct"],
-            candidate["price_difference"] is None if query_price is not None else False,
-            abs(_item_price(stock_by_id.get(str(candidate["stock_id"]), {})) - query_price)
-                if query_price is not None and candidate["price_difference"] is not None else Decimal(0),
-            str(candidate["stock_id"]),
-        ))
+        # Price contributes within a narrow name-score range; raw scores stay intact.
+        entry["candidates"].sort(key=lambda candidate: candidate_rank_key(candidate, query_price))
         all_candidates = list(entry["candidates"])
         if min_stock:
             full_main_candidates = [

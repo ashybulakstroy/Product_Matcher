@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from time import perf_counter
 from typing import Any
+from App.matching.ranking import _item_price, price_distance
 
 
 def _text_identifier(value: Any) -> str:
@@ -59,7 +60,7 @@ def aggregate_votes(
       - candidates are identical iff their exact string stock_id matches;
       - only the already stock-filtered items[*].best_candidate participates;
       - per-algorithm percentages are retained, NEVER averaged;
-      - equal leaders -> is_tie=True and recommended_stock_id=None;
+      - equal votes use price when present; equal votes and prices remain a tie;
       - selected_stock_id=None until the user explicitly makes a choice.
 
     No mutation of caller-owned inputs or result objects occurs.
@@ -126,7 +127,11 @@ def aggregate_votes(
                 if item[key] in (None, "") and candidate.get(key) not in (None, ""):
                     item[key] = candidate[key]
 
-        candidates = sorted(by_product_id.values(), key=lambda c: (-c["votes"], c["stock_id"]))
+        query_price = _item_price(query)
+        def price_key(candidate):
+            distance = price_distance(candidate.get('stock_price'), query_price)
+            return (distance is None, distance if distance is not None else 0)
+        candidates = sorted(by_product_id.values(), key=lambda c: (-c["votes"], price_key(c), c["stock_id"]))
         current_rank = 0
         previous_votes: int | None = None
         for index, candidate in enumerate(candidates, start=1):
@@ -138,6 +143,9 @@ def aggregate_votes(
 
         top_votes = candidates[0]["votes"] if candidates else 0
         leader_ids = [c["stock_id"] for c in candidates if c["votes"] == top_votes]
+        if query_price is not None and leader_ids:
+            best_price = price_key(candidates[0])
+            leader_ids = [c['stock_id'] for c in candidates if c['votes'] == top_votes and price_key(c) == best_price]
         is_tie = len(leader_ids) > 1
         positions.append({
             "position_no": position_no,

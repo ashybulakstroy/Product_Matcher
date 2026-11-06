@@ -144,7 +144,7 @@
 
   <section class="invoice-panel" id="invoice-panel" aria-labelledby="invoice-heading" hidden>
     <div id="invoice-divider" role="separator" aria-label="Изменить высоту чека и счёта" aria-orientation="horizontal" aria-controls="invoice-panel" tabindex="0" title="Потяните вверх или вниз; стрелки ↑ ↓ — изменить высоту"></div>
-    <div class="panel-heading"><div><span class="eyebrow">03 / СЧЁТ 1С</span><h2 id="invoice-heading">Счёт на оплату</h2></div><div class="invoice-heading-actions"><button id="invoice-edit-products" type="button" aria-controls="invoice-rows">Выбрать товар 1С</button><button id="invoice-confirm" type="button" hidden>Подтвердить и передать в 1С</button><span id="invoice-confirm-state" class="task-badge" hidden></span><span id="invoice-state" class="pill neutral">—</span></div></div>
+    <div class="panel-heading"><div><span class="eyebrow">03 / СЧЁТ 1С</span><h2 id="invoice-heading">Счёт на оплату</h2></div><div class="invoice-heading-actions"><button id="invoice-preview" class="button button-white" type="button">Предпросмотр PDF</button><button id="invoice-edit-products" type="button" aria-controls="invoice-rows">Выбрать товар 1С</button><button id="invoice-confirm" type="button" hidden>Подтвердить и передать в 1С</button><span id="invoice-confirm-state" class="task-badge" hidden></span><span id="invoice-state" class="pill neutral">—</span></div></div>
     <div class="panel-scroll invoice-scroll" id="invoice-scroll">
       <div id="invoice-empty" class="invoice-empty">Счёт формируется из электронного чека.</div>
       <div id="invoice-content" hidden>
@@ -153,11 +153,12 @@
           <summary class="invoice-rows-head">
             <strong>Трансформация: Строки чека → номенклатура 1С</strong>
             <span class="invoice-head-actions">
-              <button id="invoice-preview" class="button button-white" type="button">Предпросмотр</button>
-              <button id="invoice-save" class="button button-primary" type="button">Сохранить связи</button>
-              <button id="invoice-train" class="button button-white" type="button">Обучить подтверждённым связям</button>
+              
+              <button id="invoice-save" hidden class="button button-primary" type="button" title="Сохраняет выбор только для текущей квитанции, без обучения на будущее">Повторить сохранение</button>
+              <button id="invoice-train" class="button button-white" type="button" title="Запоминает подтверждённые соответствия для будущих документов">Запомнить связи на будущее</button>
             </span>
           </summary>
+          <p id="invoice-autosave-status" class="invoice-note" role="status" aria-live="polite">Выбор аналога сохраняется автоматически только для этой квитанции.</p>
           <ol id="invoice-rows" class="invoice-rows-list"></ol>
           <p class="invoice-note">Кандидаты показываются до 10 вариантов, но связь подтверждает только оператор — автоматических подтверждений нет.</p>
         </details>

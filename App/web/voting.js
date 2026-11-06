@@ -73,7 +73,7 @@
       const status = position.is_tie
         ? `Ничья: ${position.leader_count} лидера. Подтверждённый выбор отсутствует.`
         : position.recommended_stock_id !== null
-          ? `Рекомендованный код 1С: ${position.recommended_stock_id}`
+          ? `Рекомендован: ${(position.candidates||[]).find(c=>c.stock_id===position.recommended_stock_id)?.stock_name||'—'}`
           : 'Нет кандидатов для голосования.';
       section.appendChild(node('p', `${position.voting_algorithms} проголосовавших алгоритмов · ${position.unique_candidates} уникальных кандидатов · ${status}`, 'vote-small'));
       const candidates = Array.isArray(position.candidates) ? position.candidates : [];
@@ -81,7 +81,7 @@
       const scroll = node('div', undefined, 'vote-scroll');
       const table = node('table');
       const thead = node('thead');
-      const titles = ['Место', 'Код 1С', 'Номенклатура', 'Голоса', 'Доля голосов', 'Алгоритмы', 'Остаток', 'Цена 1С', 'Выбрать'];
+      const titles = ['Место', 'Номенклатура', 'Голоса', 'Доля голосов', 'Алгоритмы', 'Остаток', 'Цена 1С', 'Выбрать'];
       const header = node('tr');
       for (const title of titles) appendCell(header, 'th', title);
       thead.appendChild(header);
@@ -92,7 +92,6 @@
         const tr = node('tr');
         if ((position.leader_stock_ids || []).includes(candidate.stock_id)) tr.classList.add('vote-leader');
         appendCell(tr, 'td', format(candidate.rank));
-        appendCell(tr, 'td', format(candidate.stock_id));
         appendCell(tr, 'td', format(candidate.stock_name));
         appendCell(tr, 'td', format(candidate.votes), 'vote-total');
         appendCell(tr, 'td', `${format(candidate.vote_pct)}%`);
@@ -126,7 +125,8 @@
           for (const row of tbody.querySelectorAll('tr')) row.classList.remove('vote-selected');
           tr.classList.add('vote-selected');
           root.dataset.selectedStockId = candidate.stock_id;
-          // Event intended for future invoice-picker integration; no write happens here.
+          if(window.AnalogPicker)window.AnalogPicker.choose(candidate.stock_id);
+          // Standalone search retains its local selection event.
           root.dispatchEvent(new CustomEvent('product-matcher:vote-selection', {
             bubbles: true,
             detail: { position_no: position.position_no, checked_id: position.checked_id,

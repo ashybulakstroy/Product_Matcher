@@ -42,6 +42,9 @@ HTML_PAGE = """
       .muted-table { background: #f3f4f6; }
       .low-stock { color: #b91c1c; font-weight: 700; }
       .empty { color: #666; font-style: italic; }
+      .search-running::before{content:'';display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;animation:search-spin .8s linear infinite;vertical-align:middle}
+      @keyframes search-spin{to{transform:rotate(360deg)}}
+      @media(prefers-reduced-motion:reduce){.search-running::before{animation:none}}
     </style>
   </head>
   <body>
@@ -50,13 +53,13 @@ HTML_PAGE = """
         <h2 style="margin:0;">Интерактивный подбор аналогов</h2>
         <a href="/analog" style="font-weight:700; color:#1d4ed8; text-decoration:none;">Ашыбулак строй / /analog</a>
       </div>
-      <p class="small">При равном проценте выше кандидат с ближайшей ценой. Сравнение с учётной ценой 1С; цены должны быть в одной валюте и за одинаковую единицу. Введите товар из Торгсофт, задайте минимальный остаток и количество кандидатов. Ответ будет показан в таблице.</p>
+      <p class="small">Цена участвует в ранжировании: её влияние ограничено 3 пунктами оценки, исходный процент сходства не меняется. Сравнение с учётной ценой 1С; цены должны быть в одной валюте и за одинаковую единицу. Введите товар из Торгсофт, задайте минимальный остаток и количество кандидатов. Ответ будет показан в таблице.</p>
 
       <form id="match-form" onsubmit="event.preventDefault(); runMatch(); return false;">
         <div class="form-grid">
           <div>
             <label for="query">Название товара</label>
-            <input id="query" value="Тачка садовая одноколесная усиленная ЭКСПЕРТ" />
+            <div style="display:flex;gap:6px"><input id="query" type="search" value="Тачка садовая одноколесная усиленная ЭКСПЕРТ" /><button type="button" id="clear-query" aria-label="Очистить строку поиска" style="width:auto">×</button></div>
           </div>
           <div>
             <label for="query-price">Цена за единицу</label>
@@ -67,6 +70,7 @@ HTML_PAGE = """
             <input id="min_stock" type="number" min="0" value="3" />
           </div>
         </div>
+        <label style="margin-top:12px;font-weight:400"><input type="checkbox" id="price-search" style="width:auto"> По цене: от указанной цены, по возрастанию; название содержит строку поиска</label>
         <details style="margin-top:14px; border:1px solid #d1d5db; border-radius:8px; padding:10px 12px;">
           <summary style="cursor:pointer; color:#51617b;">Настройки поиска</summary>
           <div class="form-grid" style="margin-top:12px; grid-template-columns:1fr 1fr;">
@@ -307,7 +311,25 @@ HTML_PAGE = """
         `;
       }
 
+      const pickerToken=new URLSearchParams(location.search).get('picker');
+      if(pickerToken){
+        const channel=new BroadcastChannel('invoice-analog-'+pickerToken);
+        let choosing=false;
+        window.AnalogPicker={choose(id){
+          if(choosing)return;
+          choosing=true;
+          document.getElementById('result-box').textContent='Сохраняем выбранный аналог в квитанции…';
+          channel.postMessage({type:'choose',id:String(id)});
+          setTimeout(()=>{if(choosing){choosing=false;document.getElementById('result-box').textContent='Родительское окно не ответило. Проверьте, что квитанция открыта, и повторите выбор.';}},30000);
+        }};
+        channel.onmessage=event=>{
+          if(event.data?.type==='accepted'){choosing=false;window.close();}
+          if(event.data?.type==='error'){choosing=false;document.getElementById('result-box').textContent=event.data.message;}
+        };
+      }
+      let searchBusy=false;
       async function runMatch() {
+        if(searchBusy)return;
         const query = document.getElementById('query').value.trim();
         const min_stock = Number(document.getElementById('min_stock').value || 0);
         const price = document.getElementById('query-price').value;
@@ -320,19 +342,45 @@ HTML_PAGE = """
         }
 
         window.VotingSummary?.clear();
-        document.getElementById('result-box').textContent = 'Поиск…';
+        if(document.getElementById('price-search').checked && price===''){
+          document.getElementById('result-box').textContent='Укажите начальную цену';return;
+        }
+        searchBusy=true;
+        const box=document.getElementById('result-box');
+        const submit=document.querySelector('#match-form button[type=submit]');
+        box.textContent='Поиск идёт…';box.classList.add('search-running');box.setAttribute('aria-busy','true');submit.disabled=true;
+        try{ 
         const response = await fetch('/analog', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, price, min_stock, top_n, algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
+          body: JSON.stringify({ query, price, min_stock, top_n, price_search:document.getElementById('price-search').checked, job_id:new URLSearchParams(location.search).get('job_id'), algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
         });
 
         const data = await response.json();
+        if(!response.ok){document.getElementById('result-box').textContent=data.error||'Ошибка поиска';return;}
+        if(data.price_search){
+          document.getElementById('algorithm-results').replaceChildren();
+          const table=document.createElement('table');
+          const header=table.createTHead().insertRow();
+          for(const text of ['Товар 1С','Цена','Остаток',...(window.AnalogPicker?['Выбрать']:[])]){const th=document.createElement('th');th.textContent=text;header.append(th);}
+          const body=table.createTBody();
+          for(const item of data.items){const row=body.insertRow();for(const value of [item.name,item.accounting_price==null?'—':Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';if(window.AnalogPicker){const button=document.createElement('button');button.textContent='Выбрать';button.addEventListener('click',()=>window.AnalogPicker.choose(item.id));row.insertCell().append(button);}}
+          document.getElementById('algorithm-results').append(table);
+          document.getElementById('result-box').textContent='Найдено: '+data.items.length;return;
+        }
         window.VotingSummary?.render(data.voting, data.results_by_algorithm);
         renderTable(data);
+        }catch(error){box.textContent='Не удалось выполнить поиск: '+error.message;}
+        finally{searchBusy=false;box.classList.remove('search-running');box.setAttribute('aria-busy','false');submit.disabled=false;}
       }
 
       document.addEventListener('DOMContentLoaded', function () {
+        const params=new URLSearchParams(location.search);
+        for(const [key,id] of [['query','query'],['price','query-price'],['min_stock','min_stock']]){
+          if(params.has(key))document.getElementById(id).value=params.get(key);
+        }
+        document.getElementById('clear-query').addEventListener('click',()=>{const input=document.getElementById('query');input.value='';input.focus();});
+        if(params.get('query')?.trim())runMatch();
         const input = document.getElementById('query');
         if (input) {
           input.addEventListener('keydown', function (event) {
@@ -540,6 +588,23 @@ def load_stock_items(min_stock: int = 0):
     return result
 
 
+def price_search(query, minimum_price, stock, min_stock=0):
+    """Literal case-insensitive name containment, inclusive price floor, no Top-X cut."""
+    floor = _price(minimum_price)
+    if floor is None:
+        raise ValueError('Укажите неотрицательную начальную цену')
+    query = str(query or '').strip().casefold()
+    if not query:
+        raise ValueError('Введите название товара')
+    items = [item for item in stock
+             if query in str(item.get('name') or '').casefold()
+             and _price(item.get('accounting_price')) is not None
+             and _price(item['accounting_price']) >= floor
+             and float(item.get('quantity') or 0) >= min_stock]
+    items.sort(key=lambda item: (_price(item['accounting_price']), str(item.get('name') or '').casefold()))
+    return dict(price_search=True, items=items)
+
+
 class MatchingDebugHandler(BaseHTTPRequestHandler):
     def _serve_static(self, relative_path: str):
         if relative_path in ("", "/"):
@@ -676,9 +741,38 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
         top_n = int(payload.get("top_n", 10) or 10)
         min_stock = float(payload.get("min_stock", 3) or 0)
 
+        scoped_stock = None
+        if payload.get('job_id') and hasattr(self, 'invoice_context'):
+            job = self.server.store.get(payload['job_id'])
+            if job is None:
+                return self.send_json({'error': 'Обработка не найдена'}, 404)
+            from App.invoicing import catalog_1c
+            from App.invoicing.matching_bridge import validate_database
+            database_id = self.invoice_context(job)
+            with catalog_1c.catalog_scope(database_id) as index:
+                try:
+                    validate_database(index, database_id)
+                except ValueError as error:
+                    return self.send_json({'error': str(error)}, 400)
+                scoped_stock = [dict(item, quantity=float(item.get('stock_quantity') or 0),
+                                     accounting_price=float(item['accounting_price']) if item.get('accounting_price') is not None else None)
+                                for item in index['items']]
+        if payload.get('price_search'):
+            try:
+                result = price_search(query, payload.get('price'), scoped_stock if scoped_stock is not None else load_stock_items(), min_stock)
+            except ValueError as error:
+                result = {'error': str(error)}
+            data = json.dumps(result, ensure_ascii=False).encode('utf-8')
+            self.send_response(400 if 'error' in result else 200)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+
         if query and not checked:
             checked = [{"id": "manual_input", "name": query, "price": payload.get("price")}]
-            stock = load_stock_items(min_stock=0)
+            stock = scoped_stock if scoped_stock is not None else load_stock_items(min_stock=0)
 
         if not checked:
             self.send_response(400)
@@ -688,7 +782,7 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
             return
 
         if not stock:
-            stock = load_stock_items(min_stock=0)
+            stock = scoped_stock if scoped_stock is not None else load_stock_items(min_stock=0)
 
         try:
             result = match_debug_payload(checked, stock, top_n=top_n, min_stock=min_stock,

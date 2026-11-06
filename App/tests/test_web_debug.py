@@ -103,3 +103,13 @@ def test_match_debug_payload_keeps_search_query_for_full_results_page():
 
     assert result["query"] == "Тачка садовая одноколесная усиленная эксперт"
     assert result["results_by_algorithm"][0]["query"] == "Тачка садовая одноколесная усиленная эксперт"
+
+
+def test_price_search_filters_literal_name_price_and_stock_without_top_limit():
+    from App.web_debug import price_search
+    stock = [dict(name='Кабель медный', accounting_price=price, quantity=5) for price in range(20, 0, -1)]
+    stock += [dict(name='Провод', accounting_price=12, quantity=5),
+              dict(name='Кабель', accounting_price=None, quantity=5),
+              dict(name='Кабель', accounting_price=12, quantity=1)]
+    result = price_search('КАБЕЛЬ', 5, stock, 3)
+    assert [item['accounting_price'] for item in result['items']] == list(range(5, 21))

@@ -143,6 +143,16 @@ def _blocked_reasons(source: dict, generation_result: dict, document: dict,
     return list(dict.fromkeys(reasons))
 
 
+def sufficient_stock(candidate, required_quantity):
+    """Compare actual quantities before any display rounding; unknown stock is unavailable."""
+    try:
+        required = Decimal(str(required_quantity).replace(',', '.'))
+        stock = Decimal(str(candidate.get('stock_quantity')).replace(',', '.'))
+        return required.is_finite() and required > 0 and stock.is_finite() and stock >= required
+    except (InvalidOperation, ValueError, TypeError):
+        return False
+
+
 def _row_candidates(row: dict, *, allow_analog_fallback=True, database_id=None) -> dict[str, Any]:
     article = row.get("torgsoft_article")
     resolved = resolve_source(row, article)
@@ -161,7 +171,9 @@ def _row_candidates(row: dict, *, allow_analog_fallback=True, database_id=None) 
         pass
     from App.invoicing.catalog_1c import search_catalog
     existing = {item.get('id') or item.get('catalog_id') for item in result['items']}
-    matches = search_catalog(row.get('name') or '', limit=10)
+    matches = search_catalog(row.get('name') or '', limit=max(10, len(catalog()['items'])))
+    from App.invoicing.catalog_1c import sort_candidate_ties
+    matches['items'] = sort_candidate_ties([item for item in matches['items'] if sufficient_stock(item, row.get('quantity'))], row.get('price'))[:10]
     if not matches['items'] and article:
         from App.invoicing.ai_matching import proposals as ai_proposals
         ai=ai_proposals(row.get('name') or '',catalog(),article=article,limit=10)
@@ -179,7 +191,6 @@ def _row_candidates(row: dict, *, allow_analog_fallback=True, database_id=None) 
         added = [dict(item, origin='analog_vote') for item in suggestions if item['id'] not in existing]
         if added:
             result['items'] = result['items'][:5] + added[:5] + result['items'][5:]
-    result['items'] = result['items'][:10]
     # Proposal/remembered contracts may omit stock metadata; use live identity only.
     from App.invoicing.catalog_1c import catalog_item
     for candidate in result['items'] + result['remembered']:
@@ -187,6 +198,8 @@ def _row_candidates(row: dict, *, allow_analog_fallback=True, database_id=None) 
         if card:
             for field in ('uuid','stock_quantity','stock_amount','accounting_price','account_code','stock_as_of','snapshot_date','warehouse','warehouse_id','organization_id','database_id'):
                 candidate[field]=card.get(field)
+    for key in ('items', 'remembered'):
+        result[key] = sort_candidate_ties([candidate for candidate in result[key] if sufficient_stock(candidate, row.get('quantity'))], row.get('price'))[:10]
     return result
 
 
@@ -375,9 +388,11 @@ def training_pairs_dir() -> Path:
 
 
 @with_catalog_snapshot
-def search_catalog_1c(query: str, limit: int = 20, *, database_id=None) -> dict:
+def search_catalog_1c(query: str, limit: int = 20, *, database_id=None, required_quantity=None) -> dict:
     from App.invoicing.catalog_1c import search_catalog
-    result = search_catalog(query or "", limit=limit)
+    result = search_catalog(query or "", limit=max(limit, len(catalog()['items'])) if required_quantity is not None else limit)
+    if required_quantity is not None:
+        result['items'] = [item for item in result['items'] if sufficient_stock(item, required_quantity)][:limit]
     return {"items": _plain(result["items"]), "errors": result["errors"]}
 
 

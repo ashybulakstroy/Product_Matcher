@@ -420,19 +420,49 @@ def catalog_item(identity):
     return variants[0] if len(variants) == 1 else None
 
 
+def price_tie_key(item, receipt_price):
+    from App.matching.ranking import _price
+    price, target = _price(item.get('accounting_price')), _price(receipt_price)
+    difference = abs(target-price)/price if price and target is not None else None
+    return (difference is None, difference if difference is not None else Decimal(0))
+
+
+def sort_candidate_ties(items, receipt_price):
+    from App.matching.ranking import _price, candidate_rank_key
+    if _price(receipt_price) is None:
+        return list(items)
+    # Source priorities stay fixed; price reorders only scored suggestions.
+    groups = {}
+    for index, item in enumerate(items):
+        if item.get('score', item.get('match_score')) is not None:
+            groups.setdefault(item.get('origin'), []).append(index)
+    ordered = list(items)
+    def key(item):
+        candidate = dict(stock_id=item.get('id') or item.get('catalog_id') or '',
+                         stock_price=item.get('accounting_price'),
+                         similarity_pct=item.get('score', item.get('match_score')))
+        return candidate_rank_key(candidate, _price(receipt_price))
+    for slots in groups.values():
+        candidates = sorted((items[index] for index in slots), key=key)
+        for index, item in zip(slots, candidates):
+            ordered[index] = item
+    return ordered
+
+
 @lru_cache(maxsize=256)
-def _suggest(query, signature, invoice_signature, ai_signature, article=None, database_id=None):
-    matches = search_catalog(query, limit=1, include_invoices=True)["items"]
+def _suggest(query, signature, invoice_signature, ai_signature, article=None, database_id=None, receipt_price=None):
+    matches = search_catalog(query, limit=max(1, len(catalog()["items"])+len(invoice_catalog())), include_invoices=True)["items"]
     if not matches and article:
         from App.invoicing.ai_matching import proposals
-        matches=proposals(query,catalog(),article=article,limit=1)['items']
+        matches=proposals(query,catalog(),article=article,limit=max(1,len(catalog()['items'])))['items']
+    matches = sort_candidate_ties(matches, receipt_price)
     return matches[0] if matches else None
 
 
-def suggest_catalog(query, article=None):
+def suggest_catalog(query, article=None, *, receipt_price=None):
     from App.invoicing.learned_mapping import TRAINING_DIR
     from App.invoicing.ai_matching import signature as ai_signature
     signature = tuple((str(path), path.stat().st_mtime_ns, path.stat().st_size)
                       for path in sorted(TRAINING_DIR.glob("case_*/expected.json")))
-    product = _suggest(query, catalog()["signature"], signature, ai_signature(), article, _DATABASE.get())
+    product = _suggest(query, catalog()["signature"], signature, ai_signature(), article, _DATABASE.get(), receipt_price)
     return dict(product) if product else None

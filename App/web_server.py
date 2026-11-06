@@ -669,7 +669,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
                         database=exchange.get(task_id).database_id
                     except ExchangeNotFound as error:
                         return self.send_json(dict(error=str(error)),404)
-                return self.send_json(invoice_service.search_catalog_1c(query,database_id=database))
+                return self.send_json(invoice_service.search_catalog_1c(query,database_id=database,required_quantity=(params.get('required_quantity') or [None])[0]))
             if path == "/api/jobs":
                 with store.lock:
                     jobs = sorted(store.jobs.values(), key=lambda job:job.created_at, reverse=True)[:12]

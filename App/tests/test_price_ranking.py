@@ -49,3 +49,13 @@ def test_missing_query_price_preserves_original_order():
 @pytest.mark.parametrize('value', ['', None, 'NaN', 'Infinity', '-1', True, 'abc'])
 def test_invalid_prices_are_unknown(value):
     assert _price(value) is None
+
+
+def test_price_can_change_close_scores_but_never_large_name_gap():
+    from App.matching.ranking import candidate_rank_key
+    def candidate(score, price):
+        return dict(stock_id=str(price), similarity_pct=score, stock_price=price)
+    assert candidate_rank_key(candidate(89,100),100) < candidate_rank_key(candidate(90,1000),100)
+    assert candidate_rank_key(candidate(93,1000),100) < candidate_rank_key(candidate(90,100),100)
+    assert candidate_rank_key(candidate(90,120),100) < candidate_rank_key(candidate(90,80),100)
+    assert candidate_rank_key(candidate(90,100),None) == candidate_rank_key(candidate(90,100),None)
