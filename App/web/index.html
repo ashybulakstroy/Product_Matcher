@@ -146,6 +146,7 @@
     <div id="invoice-divider" role="separator" aria-label="Изменить высоту чека и счёта" aria-orientation="horizontal" aria-controls="invoice-panel" tabindex="0" title="Потяните вверх или вниз; стрелки ↑ ↓ — изменить высоту"></div>
     <div class="panel-heading"><div><span class="eyebrow">03 / СЧЁТ 1С</span><h2 id="invoice-heading">Счёт на оплату</h2></div><div class="invoice-heading-actions"><button id="invoice-preview" class="button button-white" type="button">Предпросмотр PDF</button><button id="invoice-edit-products" type="button" aria-controls="invoice-rows">Выбрать товар 1С</button><button id="invoice-confirm" type="button" hidden>Подтвердить и передать в 1С</button><span id="invoice-confirm-state" class="task-badge" hidden></span><span id="invoice-state" class="pill neutral">—</span></div></div>
     <div class="panel-scroll invoice-scroll" id="invoice-scroll">
+      <div id="invoice-preparation" class="invoice-preparation" role="status" aria-live="polite" hidden><span class="invoice-preparation-spinner" aria-hidden="true"></span><span id="invoice-preparation-text"></span></div>
       <div id="invoice-empty" class="invoice-empty">Счёт формируется из электронного чека.</div>
       <div id="invoice-content" hidden>
         <div id="invoice-doc" class="invoice-doc"></div>

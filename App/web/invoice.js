@@ -6,6 +6,16 @@ const $ = id => document.getElementById(id);
 const TASK=window.OCRTask||null;
 const INV = {jobId:null, revision:null, model:null, picks:new Map(), busy:false, dirty:false, pdfUrl:null, analogs:new Map(), openRows:new Set()};
 
+function preparation(message,active=true,error=false){
+  INV.preparing=active;
+  const status=$('invoice-preparation');
+  status.hidden=false;status.classList.toggle('is-running',active);status.classList.toggle('is-error',error);
+  status.setAttribute('aria-busy',String(active));
+  $('invoice-preparation-text').textContent=message;
+  const pill=$('invoice-state');
+  if(active){pill.className='pill processing';pill.textContent='Подготовка…';}
+}
+
 function clearPdf(){
   const frame=$('invoice-print-preview');
   frame.hidden=true;frame.removeAttribute('src');
@@ -425,7 +435,9 @@ async function confirmFor1C(){
       INV.model=model;INV.dirty=false;pickFromRows(model);
       await loadPrintPreview(selectionPayload());
     }
+    preparation('Ожидайте, идёт подготовка: подтверждаем итоговый документ для передачи в 1С…');
     await TASK.confirm(INV.model.revision);
+    preparation('Подготовка завершена. Документ подтверждён для передачи в 1С.',false);
     refresh();
     const panel=$('ocr-confirm-success');
     panel.hidden=false;
@@ -436,6 +448,7 @@ async function confirmFor1C(){
   }catch(error){
     $('ocr-confirm-success').hidden=true;
     const reasons=error.reasons?.length?' '+error.reasons.join(' '):'';
+    if(INV.preparing)preparation('Подготовка не завершена: '+error.message,false,true);
     errorPanel.textContent=(error.message||'Не удалось подтвердить результат')+reasons;
     errorPanel.hidden=false;
   }finally{INV.busy=false;refresh();}
@@ -446,25 +459,30 @@ function refresh(){
   $('invoice-train').disabled=INV.busy||INV.dirty||!INV.model?.ready;
   refreshTaskConfirm();
   if(INV.model)render();
+  if(INV.preparing){$('invoice-state').className='pill processing';$('invoice-state').textContent='Подготовка…';}
 }
 
 async function refreshModel(){
   if(INV.busy)return;
-  INV.busy=true;
+  INV.busy=true;refresh();
+  preparation('Ожидайте, идёт подготовка: подбираем номенклатуру 1С, рассчитываем суммы и проверяем счёт…');
   try{
     const model=await fetchModel();
-    if(model&&model.generation){
-      INV.model=model;INV.dirty=false;pickFromRows(model);refresh();
-      await loadPrintPreview(selectionPayload());
-    }
+    if(!model?.generation)throw Error('Не удалось сформировать счёт.');
+    INV.model=model;INV.dirty=false;pickFromRows(model);refresh();
+    await loadPrintPreview(selectionPayload());
+    preparation('Подготовка завершена. Документ готов к просмотру. При наличии замечаний проверьте их перед передачей в 1С.',false);
+  }catch(error){
+    preparation('Подготовка не завершена: '+error.message+' Нажмите «Предпросмотр PDF», чтобы повторить.',false,true);
   }finally{INV.busy=false;refresh();}
 }
 
 async function loadPrintPreview(payload){
+  preparation('Ожидайте, идёт подготовка: создаём печатную форму PDF итогового документа…');
   const jobId=INV.jobId;
   const response=await fetch(`/api/jobs/${jobId}/invoice/preview-pdf`,{
     method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  if(!response.ok){toast('Не удалось построить печатную форму');return;}
+  if(!response.ok)throw Error('Не удалось построить печатную форму PDF');
   const blob=await response.blob();
   if(jobId!==INV.jobId)return;
   clearPdf();INV.pdfUrl=URL.createObjectURL(blob);
@@ -495,7 +513,7 @@ async function send(action,{auto=false}={}){
     INV.model=model;
     INV.dirty=false;clearPdf();
     if(action==='selections')pickFromRows(model);
-    if(!auto)await loadPrintPreview(payload);
+    if(!auto){await loadPrintPreview(payload);preparation('Подготовка завершена. PDF готов к просмотру.',false);}
     if(TASK)await TASK.refresh();
     refresh();
     if(action==='selections'){$('invoice-autosave-status').textContent='✓ Выбор сохранён для этой квитанции';$('invoice-save').hidden=true;}
@@ -506,6 +524,7 @@ async function send(action,{auto=false}={}){
       $('invoice-autosave-status').textContent='Не удалось сохранить выбор: '+error.message;
       $('invoice-save').hidden=false;
     }
+    if(INV.preparing)preparation('Подготовка не завершена: '+error.message,false,true);
     toast('Счёт недоступен: '+error.message);
     return false;
   }
@@ -527,6 +546,7 @@ function sync(){
   INV.analogs.clear();INV.openRows.clear();INV.jobId=receipt.job_id;INV.revision=revision;
   clearPdf();INV.dirty=false;
   INV.model=null;INV.picks=new Map();
+  preparation('Ожидайте, идёт подготовка счёта на оплату…');
   $('invoice-content').hidden=true;$('invoice-empty').hidden=false;
   if(TASK)TASK.refresh();
   refresh();
@@ -553,6 +573,7 @@ function start(){
   $('invoice-train').addEventListener('click',()=>send('train'));
   $('invoice-confirm')?.addEventListener('click',confirmFor1C);
   window.addEventListener('ocr-task-state',refreshTaskConfirm);
+  window.addEventListener('receipt-result-updated',sync);
   setInterval(sync,1200);
 }
 start();
