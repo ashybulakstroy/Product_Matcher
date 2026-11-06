@@ -68,8 +68,12 @@
 .inv-clear:hover{background:#fdf1f1}
 .invoice-note{margin:10px 0 0;font-size:12px;color:var(--muted)}
 .invoice-blockers{background:#fdf4f4;border:1px solid #f3d6d6;border-radius:12px;padding:12px 15px;color:#8d3a3a;font-size:13px}
-.invoice-blockers{display:flex;flex-direction:column;gap:7px}
-.invoice-blockers ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
+.invoice-blockers summary{cursor:pointer;font-weight:600;list-style:none;display:flex;align-items:center;gap:7px}
+.invoice-blockers summary::-webkit-details-marker{display:none}
+.invoice-blockers summary::before{content:"";width:0;height:0;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s ease}
+.invoice-blockers[open] summary::before{transform:rotate(90deg)}
+.invoice-blockers summary:focus-visible{outline:2px solid currentColor;outline-offset:3px;border-radius:4px}
+.invoice-blockers ul{margin:8px 0 0;padding-left:18px;display:flex;flex-direction:column;gap:4px}
 .invoice-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
 .invoice-actions .button{text-decoration:none}
 .invoice-hint{font-size:12px;color:var(--muted)}
