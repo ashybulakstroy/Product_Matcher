@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from App.web_pipeline import decode_photo, grid_cells
+from App.ocr.web_pipeline import decode_photo, grid_cells
 from App.web_server import create_server
 
 
@@ -120,7 +120,7 @@ def test_layout_cells_include_separate_tax_row():
 
 
 def test_edit_api_validates_revision_and_persists_exports(server):
-    from App.receipt_editing import update_receipt
+    from App.ocr.receipt_editing import update_receipt
     instance, base = server
     job = instance.store.submit(b"image", "receipt.png")
     with urllib.request.urlopen(base+f"/api/jobs/{job.id}/events") as response:
@@ -173,9 +173,9 @@ def test_receipt_uses_targeted_number_before_visual_sequence_fallback():
 
 
 def test_catalog_selection_api_trains_persistent_knowledge(server, tmp_path):
-    from App.manual_mappings import ManualMappings
-    from App.ocr_catalog_eval import CatalogMatcher
-    from App.receipt_editing import update_receipt
+    from App.ocr.manual_mappings import ManualMappings
+    from App.ocr.ocr_catalog_eval import CatalogMatcher
+    from App.ocr.receipt_editing import update_receipt
     instance, base = server
     knowledge = ManualMappings(tmp_path/"manual.json")
     pipeline = instance.store.pipeline

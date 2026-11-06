@@ -1,7 +1,7 @@
 """Adapter between a verified №16 receipt snapshot and the invoice stage.
 
-Reads the receipt produced by the existing pipeline (`App.web_pipeline`,
-`App.receipt_editing`), never re-runs OCR, never mutates the source file and
+Reads the receipt produced by the existing pipeline (`App.ocr.web_pipeline`,
+`App.ocr.receipt_editing`), never re-runs OCR, never mutates the source file and
 never invents values. Every payable line stays visible; unresolved rows are
 flagged, not dropped. Output field names follow the donor generation contract
 (`items` / `vat_amount` / `total` / `date` / `order_number` / `warnings`) so
@@ -17,7 +17,7 @@ from typing import Any, Mapping
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from App.receipt_editing import parse_number
+from App.ocr.receipt_editing import parse_number
 
 CENT = Decimal(".01")
 # Payable lines that become invoice items (tax/total/header are structural).

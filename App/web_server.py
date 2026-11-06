@@ -20,12 +20,12 @@ from urllib.parse import parse_qs, unquote, urlparse
 import cv2
 from pydantic import ValidationError
 
-from App.ocr_catalog_eval import PASS_SIMILARITY, ROOT
+from App.ocr.ocr_catalog_eval import PASS_SIMILARITY, ROOT
 from App.exchange import (ExchangeConflict, ExchangeError, ExchangeNotFound, ExchangeStore,
                           contract, task_document)
 from App.exchange import multipart
-from App.web_pipeline import ReceiptPipeline
-from App.receipt_editing import apply_edit, save_receipt, update_receipt
+from App.ocr.web_pipeline import ReceiptPipeline
+from App.ocr.receipt_editing import apply_edit, save_receipt, update_receipt
 from App.server_config import ServerSettings, server_settings
 from App.invoicing import invoice_service, catalog_1c, stock_sync
 
