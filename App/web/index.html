@@ -13,9 +13,6 @@
   <script src="/ocr_activity.js" defer></script>
   <script src="/app.js" defer></script>
   <script src="/invoice.js" defer></script>
-  <script src="/voting.js" defer></script>
-  <script src="/matching_compare.js" defer></script>
-  <link rel="stylesheet" href="/matching_compare.css">
 </head>
 <body class="awaiting-receipt">
 <svg class="sprite" aria-hidden="true"><defs>
@@ -38,19 +35,6 @@
   <div class="header-right"><span id="task-badge" class="task-badge" hidden></span><label class="debug-toggle"><input id="debug-toggle" type="checkbox">Режим разработчика</label><span class="local-badge"><span class="status-dot"></span>Локальная обработка</span><span class="version">OCR / 01</span></div>
 </header>
 
-<section class="matching-compare" aria-labelledby="matching-title">
-  <h2 id="matching-title">Сравнение алгоритмов подбора товаров</h2>
-  <p>Все алгоритмы ищут в одном каталоге 1С. При равном проценте выше кандидат с ближайшей учётной ценой 1С (одинаковые валюта и единица). Выберите позицию распознанного чека или введите название.</p>
-  <form id="matching-compare-form">
-    <label>Позиция чека<select id="matching-receipt-row"><option value="">Введите название вручную</option></select></label>
-    <label class="matching-query">Товар Торгсофт<input id="matching-query" required placeholder="Например: Электроды МР-3 3 мм 2,5 кг"></label>
-    <label>Цена за единицу<input id="matching-price" type="number" min="0" step="any" placeholder="Необязательно"></label>
-    <label>Минимальный остаток<input id="matching-min-stock" type="number" min="0" step="any" value="3"></label>
-    <button class="button button-primary" type="submit">Сравнить все алгоритмы</button>
-  </form>
-  <p id="matching-status" role="status" aria-live="polite">Параллельный запуск алгоритмов</p>
-  <div id="matching-comparison-results"></div>
-</section>
 <main class="workspace">
   <section class="input-panel" aria-labelledby="input-heading">
     <div class="panel-heading"><div><span class="eyebrow">01 / ИСТОЧНИК</span><h1 id="input-heading">Фото чека Торгсофта</h1></div><div class="receipt-upload-actions"><button id="paste-top" class="button button-white" type="button" aria-label="Вставить чек из буфера обмена" hidden><svg aria-hidden="true"><use href="#i-clipboard"/></svg>Вставить чек</button><button id="choose-top" class="button button-white" type="button"><svg><use href="#i-upload"/></svg>Загрузить чек</button></div></div>
