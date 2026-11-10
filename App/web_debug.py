@@ -334,7 +334,21 @@ HTML_PAGE = """
         showSelection();
         for(const [index,item] of data.items.entries()){ 
           const row=body.insertRow();
-          for(const value of [(data.page-1)*100+index+1,item.name,...(filters.category?[item.category||'Без категории / требует проверки']:[]),Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';
+          for(const value of [(data.page-1)*100+index+1,item.name])row.insertCell().textContent=value??'—';
+          if(filters.category){
+            const category=item.category||'Без категории / требует проверки';
+            const parts=category.split(' → ');
+            const target=new URL('/analog',location.origin);
+            target.searchParams.set('query',filters.query);target.searchParams.set('price',filters.price);
+            target.searchParams.set('min_stock',String(filters.min_stock));target.searchParams.set('price_search','1');
+            for(const part of parts)target.searchParams.append('category',part);
+            const context=new URLSearchParams(location.search);
+            for(const key of ['job_id','picker'])if(context.has(key))target.searchParams.set(key,context.get(key));
+            const link=document.createElement('a');link.href=target.href;link.textContent=category;
+            link.title='Показать товары этой категории с текущими условиями поиска';
+            row.insertCell().append(link);
+          }
+          for(const value of [Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';
           const control=document.createElement('input');
           control.type=filters.category?'radio':'button';control.className='price-pick';
           if(filters.category){control.name='price-candidate';control.value=String(item.id);}
@@ -434,7 +448,13 @@ HTML_PAGE = """
         const categoryUrl='/api/stock/categories'+(params.get('job_id')?'?job_id='+encodeURIComponent(params.get('job_id')):'');
         fetch(categoryUrl).then(async response=>{const data=await response.json();if(!response.ok)throw Error(data.error||'Категории недоступны');categoryOptions=data.options||[];const list=document.getElementById('category-options');for(const option of categoryOptions){const element=document.createElement('option');element.value=option.label;list.append(element);}document.getElementById('category-status').textContent='Введите слово для поиска по всем уровням категорий или выберите полный путь. Для поиска алгоритмами поле не применяется.';}).catch(error=>{document.getElementById('category-status').textContent='Категории недоступны: '+error.message;});
         document.getElementById('clear-query').addEventListener('click',()=>{const input=document.getElementById('query');input.value='';input.focus();});
-        if(params.get('query')?.trim())runMatch();
+        if(params.get('price_search')==='1'){
+          const category=params.getAll('category');
+          document.getElementById('price-search').checked=true;
+          document.getElementById('category-query').value=category.join(' → ');
+          runMatch(1,{query:params.get('query')||'',price:params.get('price')||'',
+            min_stock:Number(params.get('min_stock')||0),category:category.length?category:null});
+        }else if(params.get('query')?.trim())runMatch();
         const input = document.getElementById('query');
         if (input) {
           input.addEventListener('keydown', function (event) {
