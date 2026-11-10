@@ -42,6 +42,9 @@ HTML_PAGE = """
       .muted-table { background: #f3f4f6; }
       .low-stock { color: #b91c1c; font-weight: 700; }
       .empty { color: #666; font-style: italic; }
+      #price-results-table tr.price-selected { background:#dbeafe; outline:2px solid #2563eb; outline-offset:-2px; }
+      #price-results-table .price-pick[aria-pressed="true"] { background:#1e40af; }
+      #price-results-table input[type="radio"] { width:auto; margin:0 auto; display:block; }
       .search-running::before{content:'';display:inline-block;width:14px;height:14px;margin-right:8px;border:2px solid #cbd5e1;border-top-color:#2563eb;border-radius:50%;animation:search-spin .8s linear infinite;vertical-align:middle}
       @keyframes search-spin{to{transform:rotate(360deg)}}
       @media(prefers-reduced-motion:reduce){.search-running::before{animation:none}}
@@ -70,9 +73,15 @@ HTML_PAGE = """
             <input id="min_stock" type="number" min="0" value="3" />
           </div>
         </div>
-        <label style="margin-top:12px;font-weight:400"><input type="checkbox" id="price-search" style="width:auto"> По цене: от указанной цены и выше, по возрастанию. Название необязательно.</label>
         <details style="margin-top:14px; border:1px solid #d1d5db; border-radius:8px; padding:10px 12px;">
           <summary style="cursor:pointer; color:#51617b;">Настройки поиска</summary>
+        <label style="margin-top:12px;font-weight:400"><input type="checkbox" id="price-search" style="width:auto"> По цене: от указанной цены и выше, по возрастанию. Название необязательно.</label>
+        <div style="margin-top:12px;max-width:760px;">
+          <label for="category-query">Категория товара — для поиска по цене</label>
+          <div style="display:flex;gap:6px"><input id="category-query" list="category-options" autocomplete="off" placeholder="Все категории — начните вводить название" /><button type="button" id="clear-category" aria-label="Очистить категорию" style="width:auto">×</button></div>
+          <datalist id="category-options"></datalist>
+          <p id="category-status" class="small" style="margin-top:5px">Загружаем категории…</p>
+        </div>
           <div class="form-grid" style="margin-top:12px; grid-template-columns:1fr 1fr;">
           <div>
             <label for="algorithm_id">Алгоритм</label>
@@ -311,20 +320,36 @@ HTML_PAGE = """
         `;
       }
 
+      let selectedPriceItem=null;
       function renderPricePage(data,filters){
         const host=document.getElementById('algorithm-results');host.replaceChildren();
         const section=document.createElement('section');
         const title=document.createElement('h3');title.textContent='Таблица 1. Товары из остатков по цене';section.append(title);
         const table=document.createElement('table');table.id='price-results-table';
         const header=table.createTHead().insertRow();
-        for(const text of ['№','Товар 1С','Цена за единицу (1С)','Остаток',...(window.AnalogPicker?['Выбрать']:[])]){const th=document.createElement('th');th.textContent=text;header.append(th);}
+        for(const text of ['№','Товар 1С',...(filters.category?['Категория']:[]),'Цена за единицу (1С)','Остаток','Выбрать']){const th=document.createElement('th');th.textContent=text;header.append(th);}
         const body=table.createTBody();
-        for(const [index,item] of data.items.entries()){
+        const selectionNote=document.createElement('p');selectionNote.setAttribute('role','status');selectionNote.className='small';
+        const showSelection=()=>{selectionNote.textContent=selectedPriceItem?'Выбран товар: '+selectedPriceItem.name+' · выбор на этой странице':'Выберите товар в списке';};
+        showSelection();
+        for(const [index,item] of data.items.entries()){ 
           const row=body.insertRow();
-          for(const value of [(data.page-1)*100+index+1,item.name,Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';
-          if(window.AnalogPicker){const button=document.createElement('button');button.textContent='Выбрать';button.addEventListener('click',()=>window.AnalogPicker.choose(item.id));row.insertCell().append(button);}
+          for(const value of [(data.page-1)*100+index+1,item.name,...(filters.category?[item.category||'Без категории / требует проверки']:[]),Math.round(Number(item.accounting_price)),Math.round(Number(item.quantity))])row.insertCell().textContent=value??'—';
+          const control=document.createElement('input');
+          control.type=filters.category?'radio':'button';control.className='price-pick';
+          if(filters.category){control.name='price-candidate';control.value=String(item.id);}
+          control.setAttribute('aria-label','Выбрать '+item.name);
+          const update=()=>{const selected=!!selectedPriceItem&&String(selectedPriceItem.id)===String(item.id);if(filters.category)control.checked=selected;else{control.value=selected?'✓ Выбрано':'Выбрать';control.setAttribute('aria-pressed',String(selected));}row.classList.toggle('price-selected',selected);};
+          update();
+          control.addEventListener('click',()=>{
+            if(window.AnalogPicker){window.AnalogPicker.choose(item.id);return;}
+            selectedPriceItem={id:item.id,name:item.name};
+            for(const other of body.querySelectorAll('tr')){other.classList.remove('price-selected');const previous=other.querySelector('.price-pick');if(previous&&previous.type==='button'){previous.value='Выбрать';previous.setAttribute('aria-pressed','false');}}
+            update();showSelection();
+          });
+          row.insertCell().append(control);
         }
-        section.append(table);
+        section.append(table,selectionNote);
         const nav=document.createElement('nav');nav.setAttribute('aria-label','Страницы результатов поиска');nav.style='display:flex;align-items:center;gap:12px;margin:16px 0;flex-wrap:wrap';
         const previous=document.createElement('button');previous.type='button';previous.textContent='← Назад';previous.disabled=data.page<=1;previous.style.width='auto';previous.onclick=()=>runMatch(data.page-1,filters);
         const label=document.createElement('span');label.textContent=`Страница ${data.page} из ${data.pages} · Всего товаров: ${data.total} · По 100 на странице`;
@@ -354,6 +379,7 @@ HTML_PAGE = """
           if(event.data?.type==='error'){choosing=false;document.getElementById('result-box').textContent=event.data.message;}
         };
       }
+      let categoryOptions=[];
       let searchBusy=false;
       async function runMatch(pageNumber=1,savedFilters=null) {
         if(searchBusy)return;
@@ -361,6 +387,9 @@ HTML_PAGE = """
         const min_stock = savedFilters?savedFilters.min_stock:Number(document.getElementById('min_stock').value || 0);
         const price = savedFilters?savedFilters.price:document.getElementById('query-price').value;
         const priceMode=savedFilters?true:document.getElementById('price-search').checked;
+        const categoryText=document.getElementById('category-query').value.trim();
+        const exactCategory=categoryOptions.find(option=>option.label===categoryText);
+        const category=savedFilters?savedFilters.category:(categoryText.includes(' → ')||categoryText==='Без категории / требует проверки'?exactCategory?.path||categoryText:categoryText||null);
         const top_n = Number(document.getElementById('top_n').value || 10);
         const algorithm_id = document.getElementById('algorithm_id').value || 'all';
 
@@ -370,6 +399,7 @@ HTML_PAGE = """
         }
 
         window.VotingSummary?.clear();
+        if(priceMode&&!savedFilters)selectedPriceItem=null;
         if(priceMode && price===''){
           document.getElementById('result-box').textContent='Укажите начальную цену';return;
         }
@@ -381,13 +411,13 @@ HTML_PAGE = """
         const response = await fetch('/analog', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ query, price, min_stock, top_n, price_search:priceMode, page:pageNumber, job_id:new URLSearchParams(location.search).get('job_id'), algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
+          body: JSON.stringify({ query, price, min_stock, top_n, price_search:priceMode, category:priceMode?category:null, page:pageNumber, job_id:new URLSearchParams(location.search).get('job_id'), algorithm_id: algorithm_id === 'all' ? null : algorithm_id, parallel: document.getElementById('parallel-search').checked })
         });
 
         const data = await response.json();
         if(!response.ok){document.getElementById('result-box').textContent=data.error||'Ошибка поиска';return;}
         if(data.price_search){
-          renderPricePage(data,{query,price,min_stock});return;
+          renderPricePage(data,{query,price,min_stock,category});return;
         }
         window.VotingSummary?.render(data.voting, data.results_by_algorithm);
         renderTable(data);
@@ -400,6 +430,9 @@ HTML_PAGE = """
         for(const [key,id] of [['query','query'],['price','query-price'],['min_stock','min_stock']]){
           if(params.has(key))document.getElementById(id).value=params.get(key);
         }
+        document.getElementById('clear-category').addEventListener('click',()=>{document.getElementById('category-query').value='';document.getElementById('category-query').focus();});
+        const categoryUrl='/api/stock/categories'+(params.get('job_id')?'?job_id='+encodeURIComponent(params.get('job_id')):'');
+        fetch(categoryUrl).then(async response=>{const data=await response.json();if(!response.ok)throw Error(data.error||'Категории недоступны');categoryOptions=data.options||[];const list=document.getElementById('category-options');for(const option of categoryOptions){const element=document.createElement('option');element.value=option.label;list.append(element);}document.getElementById('category-status').textContent='Введите слово для поиска по всем уровням категорий или выберите полный путь. Для поиска алгоритмами поле не применяется.';}).catch(error=>{document.getElementById('category-status').textContent='Категории недоступны: '+error.message;});
         document.getElementById('clear-query').addEventListener('click',()=>{const input=document.getElementById('query');input.value='';input.focus();});
         if(params.get('query')?.trim())runMatch();
         const input = document.getElementById('query');
@@ -602,6 +635,7 @@ def load_stock_items(min_stock: int = 0):
             continue
         result.append({
             "id": item.get("code") or item.get("uuid"),
+            "code": item.get("code"),
             "name": item.get("name") or item.get("code", ""),
             "quantity": qty_value,
             "accounting_price": item.get("accounting_price"),
@@ -673,8 +707,43 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(data)
 
+    def category_stock(self, job_id=None):
+        if job_id and hasattr(self, 'invoice_context'):
+            job = self.server.store.get(job_id)
+            if job is None:
+                raise ValueError('Обработка не найдена')
+            from App.invoicing import catalog_1c
+            from App.invoicing.matching_bridge import validate_database
+            database = self.invoice_context(job)
+            with catalog_1c.catalog_scope(database) as index:
+                validate_database(index, database)
+                return ([dict(item, quantity=float(item.get('stock_quantity') or 0),
+                              accounting_price=float(item['accounting_price']) if item.get('accounting_price') is not None else None)
+                         for item in index['items']], index.get('database_id'))
+        stock = load_stock_items()
+        try:
+            database = json.loads(STOCK_FILE.read_text(encoding='utf-8')).get('database_id')
+        except (OSError, ValueError):
+            database = None
+        return stock, database
+
     def do_GET(self):
         parsed = urlparse(self.path)
+        if parsed.path == "/api/stock/categories":
+            from App.invoicing.category_index import options
+            try:
+                stock, database = self.category_stock((parse_qs(parsed.query).get('job_id') or [None])[0])
+                result = {'options': options(stock, database)}
+                status = 200
+            except (ValueError, OSError) as error:
+                result, status = {'error': str(error)}, 400
+            data = json.dumps(result, ensure_ascii=False).encode('utf-8')
+            self.send_response(status)
+            self.send_header('Content-Type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
         if parsed.path == "/api/matching/algorithms":
             data = json.dumps({"algorithms": list(ALGORITHM_REGISTRY.values()), "parallel_default": True}, ensure_ascii=False).encode("utf-8")
             self.send_response(200)
@@ -777,24 +846,25 @@ class MatchingDebugHandler(BaseHTTPRequestHandler):
         min_stock = float(payload.get("min_stock", 3) or 0)
 
         scoped_stock = None
+        database_id = None
         if payload.get('job_id') and hasattr(self, 'invoice_context'):
-            job = self.server.store.get(payload['job_id'])
-            if job is None:
-                return self.send_json({'error': 'Обработка не найдена'}, 404)
-            from App.invoicing import catalog_1c
-            from App.invoicing.matching_bridge import validate_database
-            database_id = self.invoice_context(job)
-            with catalog_1c.catalog_scope(database_id) as index:
-                try:
-                    validate_database(index, database_id)
-                except ValueError as error:
-                    return self.send_json({'error': str(error)}, 400)
-                scoped_stock = [dict(item, quantity=float(item.get('stock_quantity') or 0),
-                                     accounting_price=float(item['accounting_price']) if item.get('accounting_price') is not None else None)
-                                for item in index['items']]
+            try:
+                scoped_stock, database_id = self.category_stock(payload['job_id'])
+            except ValueError as error:
+                return self.send_json({'error': str(error)}, 400)
         if payload.get('price_search'):
             try:
-                result = price_catalog_page(query, payload.get('price'), scoped_stock if scoped_stock is not None else load_stock_items(), min_stock, payload.get('page', 1))
+                from App.invoicing.category_index import filter_stock
+                if scoped_stock is None:
+                    scoped_stock, database_id = self.category_stock()
+                stock = filter_stock(scoped_stock, database_id, payload.get('category'))
+                result = price_catalog_page(query, payload.get('price'), stock, min_stock, payload.get('page', 1))
+                if payload.get('category'):
+                    from App.invoicing.category_index import assignments, UNCLASSIFIED
+                    classified = assignments(scoped_stock, database_id)
+                    for item in result['items']:
+                        parts = classified.get(str(item['id']))
+                        item['category'] = ' → '.join(parts) if parts else UNCLASSIFIED
             except ValueError as error:
                 result = {'error': str(error)}
             data = json.dumps(result, ensure_ascii=False).encode('utf-8')

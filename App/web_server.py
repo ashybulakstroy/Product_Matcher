@@ -887,7 +887,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
     class CombinedHandler(Handler, MatchingDebugHandler):
         def do_GET(self):
             path = urlparse(self.path).path
-            if path in {'/analog', '/analog/list', '/analog/list/data', '/health', '/api/matching/algorithms'}:
+            if path in {'/analog', '/analog/list', '/analog/list/data', '/health', '/api/matching/algorithms', '/api/stock/categories'}:
                 self.close_connection = True
                 return MatchingDebugHandler.do_GET(self)
             return super().do_GET()
