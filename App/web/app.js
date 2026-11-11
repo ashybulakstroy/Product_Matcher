@@ -401,6 +401,7 @@ function reset(){
   document.querySelectorAll('.receipt-transfer').forEach(card=>card.remove());
   state.token++;state.stream?.close();state.stream=null;state.job=null;state.assets.clear();state.rows.clear();state.result=null;state.completed.clear();state.activePhase=null;state.selectedRow=null;state.reviewOnly=false;resetWebProgress();
   if(state.blob){URL.revokeObjectURL(state.blob);state.blob=null;}
+  $('receipt-math-alert').hidden=true;
   state.totalFocused=false;state.editingRow=null;state.selectedCatalog=null;state.searchToken++;$('editor-panel').hidden=true;$('editor-panel').open=false;$('math-panel').hidden=true;$('receipt-errors').hidden=true;$('receipt-error-reasons').replaceChildren();
   document.querySelector('.receipt-total').classList.remove('math-passed','math-failed');document.querySelector('.receipt-total').removeAttribute('title');
   $('image-list').replaceChildren();$('receipt-body').replaceChildren();$('event-log').replaceChildren();$('receipt-area').hidden=true;$('empty-result').hidden=true;$('error-card').hidden=true;$('geometry-note').hidden=true;$('exports').hidden=true;$('activity').hidden=true;$('raw-text').textContent='';$('order-number').textContent='';$('receipt-date').textContent='Данные с фотографии';$('receipt-total').textContent='—';$('receipt-meta').textContent='Распознавание выполняется…';$('review-toggle').setAttribute('aria-pressed','false');$('review-note').hidden=true;$('process-card').classList.add('busy');
@@ -414,13 +415,28 @@ function showError(message){
   state.stream?.close();$('process-card').classList.remove('busy');$('error-card').hidden=false;$('error-text').textContent=message;$('process-title').textContent='Обработка остановлена';$('process-subtitle').textContent='Исходное фото сохранено';setPill('Нужна проверка','error');logEvent(message);
   document.querySelectorAll('.image-card').forEach(card=>card.classList.remove('active-operation'));
 }
+function showReceiptMathWarning(result,previous){
+  const calc=result?.calculation, status=calc?.validation_status??calc?.status;
+  if(!status)return;
+  const warning=$('receipt-math-alert');
+  if(status==='match'){warning.hidden=true;return;}
+  const previousStatus=previous?.calculation?.validation_status??previous?.calculation?.status;
+  if(!previous||previous.job_id!==result.job_id||previousStatus==='match'){
+    warning.hidden=false;
+    requestAnimationFrame(()=>{
+      const details=$('receipt-errors');
+      if(!details.hidden){details.scrollIntoView({behavior:'smooth',block:'center'});details.focus({preventScroll:true});}
+    });
+  }
+}
 function finish(result){
   if(!result)return;
   window.ReceiptUploadGate?.finished(result);
   VisualSync.finished();
   window.OcrActivity?.finish(true);
   stopTransferFlow();
-  if(!state.result)focusRow(null,true);
+  const previous=state.result;
+  if(!previous)focusRow(null,true);
   state.result=result;window.dispatchEvent(new Event('receipt-result-updated'));state.stream?.close();state.stream=null;state.rows=new Map(result.rows.map(row=>[row.row,row]));renderRows();
   $('empty-result').hidden=true;$('error-card').hidden=true;$('process-card').classList.remove('busy');setProgress(100);
   $('process-title').textContent=result.finalized?'Чек проверен и готов':'Распознавание завершено';$('process-subtitle').textContent=`${productLabel(result.product_count)} · ${(result.elapsed_ms/1000).toFixed(1)} с · ${result.catalog_names.toLocaleString('ru-RU')} названий в справочнике`;
@@ -429,7 +445,7 @@ function finish(result){
   document.querySelectorAll('.image-card').forEach(card=>card.classList.remove('active-operation'));
   $('order-number').textContent=result.order_number?'№ '+result.order_number:'';$('receipt-date').textContent=result.date||result.filename;
   $('receipt-total').textContent=result.calculation?formatMoney(result.calculation.computed_total):result.total_raw||'Не прочитан';$('receipt-meta').textContent=result.finalized?'Проверено пользователем · итог совпадает с фотографией':'Черновик · исходный OCR сохранён отдельно';
-  renderMath();setupEditor();
+  renderMath();setupEditor();showReceiptMathWarning(result,previous);
   $('download-json').href=result.downloads.json;$('download-csv').href=result.downloads.csv;$('exports').hidden=false;$('raw-text').textContent=result.raw_text;
   if(result.warnings?.length){$('geometry-note').hidden=false;$('geometry-note').textContent=result.warnings.some(w=>w.includes('не удалось'))?result.warnings.join(' · '):'Граница таблицы содержит неоднозначные участки. Проверьте результат выпрямления по исходному фото.';}
 }
@@ -568,6 +584,12 @@ document.addEventListener('dragenter',event=>{if(event.dataTransfer?.types.inclu
 document.addEventListener('dragover',event=>{if(event.dataTransfer?.types.includes('Files')){event.preventDefault();event.dataTransfer.dropEffect='copy';}});
 document.addEventListener('dragleave',()=>{dragDepth=Math.max(0,dragDepth-1);if(!dragDepth)$('drop-overlay').hidden=true;});
 document.addEventListener('drop',event=>{event.preventDefault();dragDepth=0;$('drop-overlay').hidden=true;if(event.dataTransfer?.files.length)upload(event.dataTransfer.files[0]);});
+$('receipt-math-alert-close').addEventListener('click',()=>$('receipt-math-alert').hidden=true);
+$('receipt-math-alert-details').addEventListener('click',()=>{
+  $('receipt-math-alert').hidden=true;
+  const details=$('receipt-errors');
+  if(!details.hidden){details.scrollIntoView({behavior:'smooth',block:'center'});details.focus({preventScroll:true});}
+});
 $('review-toggle').addEventListener('click',()=>{state.reviewOnly=!state.reviewOnly;$('review-toggle').setAttribute('aria-pressed',state.reviewOnly);renderRows();});
 $('close-dialog').addEventListener('click',()=>$('image-dialog').close());
 $('image-dialog').addEventListener('click',event=>{if(event.target===$('image-dialog'))$('image-dialog').close();});

@@ -129,7 +129,7 @@
           <div class="receipt-total"><span>Итого</span><strong id="receipt-total">—</strong></div>
           <div class="receipt-bottom" hidden><span id="receipt-meta"></span></div>
         </article>
-        <section id="receipt-errors" class="receipt-errors" hidden aria-live="polite">
+        <section id="receipt-errors" class="receipt-errors" hidden aria-live="polite" tabindex="-1">
           <strong>Почему чек отмечен красным</strong>
           <ul id="receipt-error-reasons"></ul>
           <p>Нажмите на строку чека, чтобы сверить данные с фотографией и исправить их.</p>
@@ -184,6 +184,11 @@
 
 <footer class="app-footer"><span><span class="status-dot" id="connection-dot"></span><span id="connection-text">Подключение к серверу…</span><span id="stock-as-of" class="stock-as-of" hidden></span></span><span>Фотографии обрабатываются на этом компьютере</span></footer>
 <input id="file-input" type="file" accept="image/jpeg,image/png,image/webp" hidden>
+<div id="receipt-math-alert" class="receipt-math-alert" role="alert" hidden>
+  <strong>Проверьте числовые данные чека</strong>
+  <span>Сумма или НДС не прошли проверку. Сверьте количества и цены с фотографией.</span>
+  <div><button id="receipt-math-alert-details" type="button">Показать причины</button><button id="receipt-math-alert-close" type="button" aria-label="Закрыть предупреждение">×</button></div>
+</div>
 <div id="toast" class="toast" role="status" hidden></div>
 <dialog id="image-dialog"><div class="dialog-header"><strong id="dialog-title">Изображение</strong><button id="close-dialog" class="icon-button" type="button" aria-label="Закрыть"><svg><use href="#i-close"/></svg></button></div><div id="dialog-image"></div></dialog>
 </body></html>

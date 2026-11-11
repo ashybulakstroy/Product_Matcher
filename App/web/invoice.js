@@ -477,8 +477,14 @@ async function refreshModel(){
     const model=await fetchModel();
     if(!model?.generation)throw Error('Не удалось сформировать счёт.');
     INV.model=model;INV.dirty=false;pickFromRows(model);refresh();
-    await loadPrintPreview(selectionPayload());
-    preparation('Подготовка завершена. Документ готов к просмотру. При наличии замечаний проверьте их перед передачей в 1С.',false);
+    const calc=result()?.calculation;
+    if(calc&&(calc.validation_status??calc.status)!=='match'){
+      clearPdf();
+      preparation('Счёт подготовлен. Сначала проверьте числовые данные и итог чека; PDF можно открыть вручную.',false);
+    }else{
+      await loadPrintPreview(selectionPayload());
+      preparation('Подготовка завершена. Документ готов к просмотру. При наличии замечаний проверьте их перед передачей в 1С.',false);
+    }
   }catch(error){
     preparation('Подготовка не завершена: '+error.message+' Нажмите «Предпросмотр PDF», чтобы повторить.',false,true);
   }finally{INV.busy=false;refresh();}

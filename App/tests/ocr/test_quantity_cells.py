@@ -61,3 +61,32 @@ def test_empty_cell_cannot_generate_a_quantity():
         raise AssertionError("No OCR call for a blank cell")
     result,record,_=recover_quantities(receipt,image,layout,forbidden)
     assert result==receipt and not record["attempts"]
+
+
+def test_clipped_one_with_independent_ocr_views_is_provisional_if_other_math_fails(monkeypatch):
+    from App.ocr import quantity_cells
+    receipt,image,layout=fixture(total="200")
+    def clipped(image,row,layout):
+        return dict(row=row['row'],bounds=[300,130,377,160],tight_bounds=[369,135,377,155],
+                    crop=image[130:160,300:377],tight=image[135:155,369:377])
+    monkeypatch.setattr(quantity_cells,'quantity_crop',clipped)
+    def recognize(images):
+        if len(images)==2:return [('',0.0),('1',.48)]
+        return [('1',.4),('1',.5),('',0.0)]
+    result,record,_=recover_quantities(receipt,image,layout,recognize)
+    row=result['rows'][0]
+    assert row['quantity']=='1' and row['quantity_raw']=='' and row['quantity_unverified']
+    assert record['provisional_rows']==[row['row']] and result['calculation']['status']!='match'
+
+
+def test_clipped_one_requires_two_supported_ocr_views(monkeypatch):
+    from App.ocr import quantity_cells
+    receipt,image,layout=fixture(total="200")
+    monkeypatch.setattr(quantity_cells,'quantity_crop',lambda image,row,layout:dict(
+        row=row['row'],bounds=[300,130,377,160],tight_bounds=[369,135,377,155],
+        crop=image[130:160,300:377],tight=image[135:155,369:377]))
+    def recognize(images):
+        if len(images)==2:return [('',0),('1',.48)]
+        return [('1',.4),('7',.8),('',0)]
+    result,record,_=recover_quantities(receipt,image,layout,recognize)
+    assert result==receipt and not record['applied']

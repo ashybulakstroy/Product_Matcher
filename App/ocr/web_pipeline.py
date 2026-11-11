@@ -25,6 +25,8 @@ from App.ocr.ocr_catalog_eval import (ROOT, PASS_SIMILARITY, CatalogMatcher, ali
                                   needs_review, parse_rows, review_reason, table_layout)
 from App.ocr.ocr_run import MODEL
 from App.ocr.table_boundary import detect_table_boundary
+from App.ocr.full_grid_boundary import detect_full_grid_boundary
+from App.ocr.receipt_roi_recovery import recover_after_boundary_failure
 from App.ocr.receipt_editing import initialize_row, save_receipt, update_receipt
 from App.ocr.manual_mappings import ManualMappings
 from App.ocr.quantity_cells import recover_quantities
@@ -215,10 +217,9 @@ class ReceiptPipeline:
         )
         if orientation_mode == "recovery" and (
             orientation_info["status"] != "OK"
-            or orientation_info["rotation_clockwise"] == 0
         ):
             raise ValueError(
-                "Повторная проверка 4 ориентаций не подтвердила другой поворот. "
+                "Не удалось достоверно установить ориентацию фотографии. "
                 "Требуется ручная проверка фото."
             )
         job.image(
@@ -230,6 +231,14 @@ class ReceiptPipeline:
         )
         job.phase("geometry", 13, "Ищем границы товарной таблицы")
         boundary = detect_table_boundary(image)
+        if boundary["polygon"] is None:
+            boundary, paper_roi_report = recover_after_boundary_failure(
+                image, detect_table_boundary, boundary, detect_full_grid_boundary,
+            )
+            job.json_file("paper_roi_recovery.json", paper_roi_report)
+            if paper_roi_report["status"] == "recovered":
+                job.publish("message", title="Товарная таблица найдена на узком чеке без повторного OCR",
+                            progress=21)
         polygon = boundary["polygon"]
         if polygon is None:
             if orientation_mode == "normal":
@@ -384,7 +393,12 @@ class ReceiptPipeline:
                     if row["row"] in recovered_rows:
                         found = recovered_rows[row["row"]]
                         row.update(quantity=found["quantity"],quantity_source="cell_ocr",quantity_ocr=found["quantity_ocr"])
-                job.publish("message",title=f"Количество прочитано отдельно по ячейкам: {len(recovered_rows)}; сумма и НДС проверены",progress=77)
+                        if found.get('quantity_unverified'):
+                            row['quantity_unverified'] = True
+                quantity_message = (f"Количество прочитано по ячейкам: {len(recovered_rows)}; итог и НДС требуют проверки"
+                                    if quantity_check.get('provisional_rows') else
+                                    f"Количество прочитано отдельно по ячейкам: {len(recovered_rows)}; сумма и НДС проверены")
+                job.publish("message",title=quantity_message,progress=77)
             else:
                 job.publish("message",title="Повторное чтение количеств не подтверждено; строки оставлены на проверку",progress=77)
         split_receipt,numeric_split = recover_numeric_cells(dict(rows=rows,total_raw=total),layout,lines)
