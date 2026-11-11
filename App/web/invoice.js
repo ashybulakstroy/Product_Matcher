@@ -161,7 +161,7 @@ function renderRow(item,index){
   aiVote.type='button';aiVote.title='Голосование алгоритмов и предварительный выбор';
   const aiSearch=node('a','button button-white','ИИ поиск');
   aiSearch.title='Открыть поиск аналогов с названием и ценой из чека';
-  const params=new URLSearchParams({query:item.source_name||'',price:String(item.source_price??''),
+  const params=new URLSearchParams({query:item.source_name||'',source_name:item.source_name||'',source_price:String(item.source_price??''),price:String(item.source_price??''),
     min_stock:String(item.source_quantity??3),job_id:INV.jobId||''});
   aiSearch.href='/analog?'+params.toString();aiSearch.target='_blank';aiSearch.rel='noopener';
   aiSearch.addEventListener('click',event=>{

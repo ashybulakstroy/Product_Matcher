@@ -81,9 +81,9 @@
       const scroll = node('div', undefined, 'vote-scroll');
       const table = node('table');
       const thead = node('thead');
-      const titles = ['Место', 'Номенклатура', 'Голоса', 'Доля голосов', 'Алгоритмы', 'Остаток', 'Цена 1С', 'Выбрать'];
+      const titles = ['Место', 'Номенклатура', 'Цена 1С', 'Голоса', 'Доля голосов', 'Алгоритмы', 'Остаток', 'Выбрать'];
       const header = node('tr');
-      for (const title of titles) appendCell(header, 'th', title);
+      for (const title of titles){const th=appendCell(header,'th',title);if(title==='Цена 1С')th.dataset.priceHeader='';}
       thead.appendChild(header);
       table.appendChild(thead);
       const tbody = node('tbody');
@@ -92,7 +92,14 @@
         const tr = node('tr');
         if ((position.leader_stock_ids || []).includes(candidate.stock_id)) tr.classList.add('vote-leader');
         appendCell(tr, 'td', format(candidate.rank));
-        appendCell(tr, 'td', format(candidate.stock_name));
+        const nameCell=appendCell(tr, 'td', format(candidate.stock_name));
+        if(window.originalProductTooltip)nameCell.title=window.originalProductTooltip(candidate.stock_price);
+        const roundedPrice = candidate.stock_price_display ?? (
+          typeof candidate.stock_price === 'number' && Number.isFinite(candidate.stock_price)
+            ? Math.round(candidate.stock_price) : null);
+        const priceCell = appendCell(tr, 'td', format(roundedPrice));
+        if(candidate.stock_price!==null&&candidate.stock_price!==undefined&&Number.isFinite(Number(candidate.stock_price)))priceCell.dataset.price=String(candidate.stock_price);
+        priceCell.appendChild(node('div', `Отклонение: ${format(candidate.price_difference_display)}`, 'vote-small'));
         appendCell(tr, 'td', format(candidate.votes), 'vote-total');
         appendCell(tr, 'td', `${format(candidate.vote_pct)}%`);
         const votersCell = appendCell(tr, 'td');
@@ -110,11 +117,6 @@
           }
         }
         appendCell(tr, 'td', format(candidate.stock_qty));
-        const roundedPrice = candidate.stock_price_display ?? (
-          typeof candidate.stock_price === 'number' && Number.isFinite(candidate.stock_price)
-            ? Math.round(candidate.stock_price) : null);
-        const priceCell = appendCell(tr, 'td', format(roundedPrice));
-        priceCell.appendChild(node('div', `Отклонение: ${format(candidate.price_difference_display)}`, 'vote-small'));
         const chooseCell = appendCell(tr, 'td');
         const radio = node('input');
         radio.type = 'radio';
@@ -138,6 +140,7 @@
         tbody.appendChild(tr);
       }
       table.appendChild(tbody);
+      window.PriceSort?.attach(table);
       scroll.appendChild(table);
       section.appendChild(scroll);
       section.appendChild(selectedText);
