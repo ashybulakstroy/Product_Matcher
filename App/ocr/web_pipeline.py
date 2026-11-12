@@ -418,6 +418,8 @@ class ReceiptPipeline:
             job.json_file('numeric_recovery.json',numeric_report)
             if numeric_report['vat_triggered']:
                 job.publish('message',title='Дополнительно проверена сумма НДС',progress=78)
+            if numeric_report.get('ensemble', {}).get('triggered'):
+                job.publish('message',title='Дополнительно проверены подозрительные числовые поля',progress=79)
             if numeric_report['total_triggered']:
                 job.publish('message',title='Повторно проверены количество, цены, НДС и итог',progress=79)
             if numeric_report['applied_count']:

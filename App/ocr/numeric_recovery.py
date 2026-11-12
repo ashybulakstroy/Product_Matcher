@@ -295,6 +295,38 @@ def recover_numeric_receipt(receipt, image, layout, aligned_lines, recognize, *,
         else:
             audit['warnings'].append('Повторное чтение НДС не подтверждено арифметикой, исходные значения сохранены')
 
+    # Numeric ensemble: bounded, independently verified candidate corrections.
+    # On failure or when disabled, keep the established numeric fallback below.
+    middle, _ = _clean_state(current)
+    if middle['status'] in {'mismatch', 'incomplete'} or middle['vat']['status'] == 'mismatch':
+        try:
+            from pathlib import Path
+            import os
+            import shutil
+            from App.ocr.numeric_fallback_ensemble import (
+                recover_mismatched_numbers, load_ensemble_options, optional_easyocr_reader,
+            )
+            options = load_ensemble_options()
+            if options['enabled']:
+                executable = options['tesseract_exe']
+                if executable == 'tesseract' and not shutil.which(executable):
+                    program_files = os.environ.get('ProgramFiles')
+                    candidate = Path(program_files) / 'Tesseract-OCR' / 'tesseract.exe' if program_files else None
+                    if candidate and candidate.is_file():
+                        executable = str(candidate)
+                reader = optional_easyocr_reader(Path(__file__).resolve().parents[2], enabled=options['enable_easyocr'])
+                current, ensemble = recover_mismatched_numbers(
+                    current, image, layout, recognize, ocr_lock=ocr_lock,
+                    max_cells=options['max_cells'], max_views=options['max_views'],
+                    use_tesseract=options['use_tesseract'], easyocr_reader=reader,
+                    require_two_engines=options['require_two_engines'], tesseract_exe=executable,
+                )
+                audit['ensemble'] = ensemble
+                audit['applied'].extend(ensemble['applied'])
+                audit['warnings'].extend(ensemble.get('warnings', []))
+        except Exception as error:
+            audit['ensemble'] = dict(status='error', error=str(error))
+            audit['warnings'].append('Дополнительный числовой OCR недоступен; используется штатная проверка')
     middle, _ = _clean_state(current)
     # No grand total printed -> missing_original_total: do not fabricate one.
     if middle['status'] in {'mismatch', 'incomplete', 'missing_original_total'}:

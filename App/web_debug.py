@@ -58,7 +58,7 @@ HTML_PAGE = """
     <div class="panel">
       <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap;">
         <h2 style="margin:0;">Интерактивный подбор аналогов</h2>
-        <a href="/analog" style="font-weight:700; color:#1d4ed8; text-decoration:none;">Ашыбулак строй / /analog</a>
+        <a href="/" style="font-weight:700; color:#1d4ed8; text-decoration:none;">Ашыбулак строй / Главная</a>
       </div>
       <p class="small">Цена участвует в ранжировании: её влияние ограничено 3 пунктами оценки, исходный процент сходства не меняется. Сравнение с учётной ценой 1С; цены должны быть в одной валюте и за одинаковую единицу. Введите товар из Торгсофт, задайте минимальный остаток и количество кандидатов. Ответ будет показан в таблице.</p>
 

@@ -563,14 +563,11 @@ async function loadJob(id,token){
 }
 async function restore(){
   if(TASK)return restoreTask();
-  if(freshStart)return;
-  let id;try{id=localStorage.getItem('receipt-last-job');}catch{return;}if(!id||!/^\w{32}$/.test(id))return;
-  await loadJob(id,state.token);
 }
 document.querySelector('.app-header').addEventListener('click',event=>{
   if(event.target.closest('.debug-toggle'))return;
   if(event.button!==0||event.ctrlKey||event.metaKey||event.shiftKey||event.altKey)return;
-  event.preventDefault();if(TASK){location.reload();return;}try{localStorage.removeItem('receipt-last-job');}catch{}location.assign('/?new=1');
+  event.preventDefault();location.assign('/');
 });
 $('debug-toggle').checked=false;
 $('debug-toggle').addEventListener('change',event=>document.body.classList.toggle('debug-mode',event.target.checked));
