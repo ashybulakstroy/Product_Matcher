@@ -8,6 +8,8 @@ pillow==13.0.0
 RapidFuzz==3.14.6
 openpyxl==3.1.5
 python-dotenv==1.2.4
+# Numeric OCR ensemble also uses external Tesseract OCR 5.x (not a pip package).
+# Install separately; see README.md. EasyOCR is disabled by default and not required.
 # 1C invoice experiment (Etap 1, verified on Python 3.14.2, 29.10.2026):
 pydantic==2.14.1
 xlrd==2.0.2
