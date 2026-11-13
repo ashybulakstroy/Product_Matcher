@@ -818,7 +818,7 @@ class CatalogMatcher:
 
 def table_layout(image, metadata):
 
-    if metadata.get("method")=="wave_grid" and metadata.get("grid_layout"):
+    if metadata.get("method") in {"wave_grid", "grid_curvature_v2"} and metadata.get("grid_layout"):
 
         return dict(metadata["grid_layout"],row_boundaries=list(metadata["grid_layout"]["row_boundaries"]))
 

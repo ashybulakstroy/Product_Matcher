@@ -325,6 +325,7 @@ class ReceiptPipeline:
                 image, polygon, trust_top=boundary["status"]=="detected")
         warnings.extend(metadata["warnings"])
         subtitle = {"wave_grid":"Выпрямлены волны по внутренней сетке; ячейка итога сохранена",
+                    "grid_curvature_v2":"Выпрямлены изогнутые строки по V2-сетке; ячейка итога сохранена",
                     "original_crop_fallback":"Сохранена исходная геометрия: требуется проверка"}.get(metadata["method"],"Выпрямлены границы; нижняя ячейка итога сохранена")
         job.publish("message",title=subtitle,progress=37)
         emit_status(job, "geometry", "Выпрямляем таблицу", details=subtitle)
