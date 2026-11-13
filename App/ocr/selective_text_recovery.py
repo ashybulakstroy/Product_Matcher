@@ -352,7 +352,7 @@ def _read_settings(root):
 
 
 def recover_text_names(rows, aligned_lines, image, layout, *, rapidocr=None,
-                       ocr_lock=None, settings=None, output_dir=None, only_rows=None):
+                       ocr_lock=None, settings=None, output_dir=None, only_rows=None, force_rows=None):
     """Return (deep-copied rows, diagnostic report), no source OCR is overwritten.
 
     Stage 1: inspect original blocks for every product row; no OCR calls.
@@ -373,6 +373,7 @@ def recover_text_names(rows, aligned_lines, image, layout, *, rapidocr=None,
         return result, report
     pending = []
     chosen_rows = set(map(int, only_rows)) if only_rows is not None else None
+    forced = set(map(int, force_rows or []))
     for row in result:
         if row.get('kind') != 'product' or (chosen_rows is not None and row.get('row') not in chosen_rows):
             continue
@@ -390,6 +391,8 @@ def recover_text_names(rows, aligned_lines, image, layout, *, rapidocr=None,
                                              'block_count': len(blocks)})
             continue  # No second OCR: the original blocks contained the words.
         reasons = _damaged(old, _confidence(row.get('ocr_confidence')))
+        if row.get('row') in forced:
+            reasons.append('photo_evidence_of_name_column_tear')
         if reasons:
             pending.append((row, reasons))
         else:

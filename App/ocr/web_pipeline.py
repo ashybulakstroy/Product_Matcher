@@ -25,6 +25,8 @@ from App.ocr.ocr_catalog_eval import (ROOT, PASS_SIMILARITY, CatalogMatcher, ali
                                   needs_review, parse_rows, review_reason, table_layout)
 from App.ocr.ocr_run import MODEL
 from App.ocr.table_boundary import detect_table_boundary
+from App.ocr.damaged_receipt_geometry import recover_damaged_boundary, detect_damaged_grid, observed_row_layout
+from App.ocr.damaged_receipt_text import detect_damage_stripe, affected_name_rows
 from App.ocr.full_grid_boundary import detect_full_grid_boundary
 from App.ocr.receipt_roi_recovery import recover_table_boundary, recover_compact_table
 from App.ocr.table_verification import verify_table_candidate
@@ -265,6 +267,26 @@ class ReceiptPipeline:
         selection.update(final=verification, header_ocr_calls=header_ocr_calls,
                          existing_boundary_preserved=verification['status'] == 'uncertain')
         job.json_file('table_verification.json', selection)
+        # Last geometry fallback: accept only observed five-column and
+        # horizontal printed rules; never guess a table from the sheet outline.
+        damage_grid_report = dict(status='not_needed', ocr_calls=0)
+        if (boundary.get('polygon') is None or
+                (verification.get('status') == 'uncertain' and
+                 verification.get('geometry', {}).get('four_columns') is False and
+                 verification.get('header', {}).get('state') != 'confirmed')):
+            candidate, damage_grid_report = recover_damaged_boundary(
+                image, boundary, verifier=verify_table_candidate,
+                previous_verification=verification,
+            )
+            if damage_grid_report.get('status') == 'recovered':
+                boundary = candidate
+                verification = damage_grid_report.get('verification') or verify_table_candidate(image, candidate, None)
+                selection['damaged_fallback'] = damage_grid_report
+                selection['final'] = verification
+                selection['existing_boundary_preserved'] = False
+                job.json_file('table_verification.json', selection)
+                job.publish('message', title='Разорванная таблица найдена по сохранившимся линиям', progress=23)
+        job.json_file('damaged_grid_recovery.json', damage_grid_report)
         polygon = boundary["polygon"]
         if polygon is None:
             if orientation_mode == "normal":
@@ -293,6 +315,11 @@ class ReceiptPipeline:
         job.phase("geometry", 32, "Проверяем волны бумаги и выпрямляем таблицу")
         if "partial_contour_replaced_by_full_grid_hypothesis" in boundary["warnings"]:
             rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
+        elif damage_grid_report.get('status') == 'recovered':
+            try:
+                rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
+            except ValueError:
+                rectified, map_x, map_y, metadata = rectify_table(image, polygon, trust_top=True)
         else:
             rectified, map_x, map_y, metadata = rectify_table(
                 image, polygon, trust_top=boundary["status"]=="detected")
@@ -308,6 +335,9 @@ class ReceiptPipeline:
         job.phase("layout", 40, "Находим строки и столбцы")
         layout = table_layout(rectified, metadata)
         layout.setdefault("body_left",metadata["margin"])
+        if damage_grid_report.get('status') == 'recovered':
+            layout, damage_layout_report = observed_row_layout(layout, map_x, map_y, damage_grid_report)
+            job.json_file('damaged_row_layout.json', damage_layout_report)
         estimated_rows = preliminary_row_count(layout.get("row_boundaries", []))
         emit_status(job, "layout", "Определяем товарные строки",
                     details=(f"Предварительно выделено {estimated_rows} строк таблицы"
@@ -455,11 +485,29 @@ class ReceiptPipeline:
         except Exception as error:
             job.json_file('numeric_recovery.json',dict(status='error',detail=str(error)))
             job.publish('message',title='Повторная проверка чисел недоступна; исходный OCR сохранён',progress=79)
+        # The repair is selective: only small receipts with a corroborated
+        # white tear through the name column can force an additional name OCR.
+        damage_name_report = dict(status='not_checked', stripes=[])
+        damage_forced_rows = []
+        try:
+            if sum(r.get('kind') == 'product' for r in rows) <= 3 and boundary.get('polygon') is not None:
+                if damage_grid_report.get('status') == 'recovered':
+                    column_positions = damage_grid_report.get('selected_columns', [])
+                else:
+                    _, probe = detect_damaged_grid(image)
+                    column_positions = probe.get('selected_columns', []) if probe.get('status') == 'recovered' else []
+                damage_name_report = detect_damage_stripe(image, boundary['polygon'], column_positions)
+                damage_forced_rows = affected_name_rows(rows, layout, map_y, damage_name_report, limit=3)
+            damage_name_report['forced_rows'] = damage_forced_rows
+        except (ValueError, TypeError, KeyError, cv2.error) as error:
+            damage_name_report = dict(status='diagnostic_error', detail=str(error)[:300], forced_rows=[])
+        job.json_file('damaged_name_stripe.json', damage_name_report)
         try:
             rows, text_recovery_report = recover_text_names(
                 rows, aligned, rectified, layout,
                 rapidocr=lambda crop: self.engine(crop)[0], ocr_lock=self.ocr_lock,
                 output_dir=job.directory / 'text_recovery',
+                force_rows=damage_forced_rows,
             )
             job.json_file('selective_text_recovery.json', text_recovery_report)
             count = len(text_recovery_report['stage1_applied']) + len(text_recovery_report['stage2_applied'])

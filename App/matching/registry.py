@@ -95,6 +95,18 @@ ALGORITHMS = {
         module='App.matching.algorithms.semantic.minilm_13',
         function='match_products_semantic_minilm_13', execution='shared_model',
     ),
+    'bm25_14': AlgorithmSpec(
+        id='bm25_14', name='bm25_14', title='BM25 14',
+        description='Okapi BM25: редкие термины, длина названия, проверка характеристик. CPU без API.',
+        module='App.matching.algorithms.lexical.bm25_14',
+        function='match_products_bm25_14', execution='cpu',
+    ),
+    'tfidf_15': AlgorithmSpec(
+        id='tfidf_15', name='tfidf_15', title='TF-IDF 15 (char n-grams)',
+        description='TF-IDF + cosine: слова и символьные 3-5 граммы, устойчивость к опечаткам. CPU.',
+        module='App.matching.algorithms.lexical.tfidf_15',
+        function='match_products_tfidf_15', execution='cpu',
+    ),
 }
 
 ALGORITHM_REGISTRY = {key: spec.metadata() for key, spec in ALGORITHMS.items()}
