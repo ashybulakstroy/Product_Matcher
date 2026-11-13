@@ -16,7 +16,7 @@ from rapidocr_onnxruntime import RapidOCR
 from rapidfuzz import fuzz, process
 
 from App.ocr.ocr_activity import preliminary_row_count, completed_text_rows, row_totals, emit_status
-from App.ocr.visual_sync import emit as emit_visual, raw_row as visual_raw_row
+from App.ocr.visual_sync import emit as emit_visual, raw_row as visual_raw_row, ready_cells
 from App.ocr.receipt_rectification import rectify_table
 from App.ocr.receipt_orientation_detector import orient_receipt
 from App.ocr.rotation_rectification import rotate_table_crop
@@ -175,7 +175,7 @@ class ReceiptPipeline:
                                             box_original=np.asarray(box).tolist())
                                        for box, (text, confidence) in zip(detected, results)
                                        if confidence >= self.engine.text_score]
-                            on_partial(partial)
+                            on_partial(partial, pending_boxes=detected[len(results):])
                             rows_done, rows_total = completed_text_rows(detected, len(results), row_boundaries) if row_boundaries is not None else (0, 0)
                             if rows_total:
                                 emit_status(job, "ocr", "Распознаём товары, количество и цены",
@@ -335,7 +335,7 @@ class ReceiptPipeline:
         emit_status(job, "ocr", "Распознаём товары, количество и цены",
                     details="Читаем строки таблицы")
         visual_seen_rows = set()
-        def draft_ready(partial):
+        def draft_ready(partial, pending_boxes=()):
             provisional = aligned_lines(dict(lines=partial), metadata)
             boundaries, _ = choose_row_boundaries(provisional, layout)
             draft = parse_rows(provisional, layout, boundaries)
@@ -343,7 +343,9 @@ class ReceiptPipeline:
                 row.update(name=row["name_raw"], quantity=row["quantity_raw"], price=row["price_raw"],
                            stage="ocr", match=None, similarity=None, articles=[], needs_review=False,
                            ocr_name_confidence_pct=round(row["ocr_confidence"]*100, 2))
-            job.publish("draft_rows", rows=draft, title="Чек собирается из OCR", progress=64)
+            job.publish("draft_rows", rows=draft, cells=grid_cells(layout, draft),
+                        ready_cells=ready_cells(draft, layout, pending_boxes),
+                        title="Чек собирается из OCR", progress=64)
             for draft_row in draft:
                 row_id = draft_row.get("row")
                 if (row_id not in visual_seen_rows and draft_row.get("kind") in {"product", "tax", "service"}
@@ -473,7 +475,8 @@ class ReceiptPipeline:
             row.update(name=row.get('name_recovered', row["name_raw"]), quantity=row.get("quantity",row["quantity_raw"]), price=row.get("price",row["price_raw"]), stage="ocr",
                        match=None, articles=[], similarity=None, needs_review=False,
                        ocr_name_confidence_pct=round(row["ocr_confidence"]*100, 2))
-        job.publish("draft_rows", rows=rows, pass_similarity=PASS_SIMILARITY, title="OCR готов. Начинаем подбор названий", progress=80)
+        job.publish("draft_rows", rows=rows, ready_cells=ready_cells(rows, layout),
+                    pass_similarity=PASS_SIMILARITY, title="OCR готов. Начинаем подбор названий", progress=80)
         for complete_row in rows:
             if (complete_row.get("row") not in visual_seen_rows
                     and complete_row.get("kind") in {"product", "tax", "service"}

@@ -29,7 +29,7 @@ function renderWebProgress(event){
   item.className=event.status||'running';item.querySelector('.mark').textContent=event.status==='done'?'✓':event.status==='error'?'!':'…';
   item.querySelector('.label').textContent=event.detail||event.label||event.stage;
   item.querySelector('small').textContent=event.elapsed_ms==null?'':`${Number(event.elapsed_ms).toFixed(0)} мс`;
-  item.scrollIntoView({block:'nearest'});
+  if(!VisualSync.presenting)item.scrollIntoView({block:'nearest'});
   const preview=$('progress-preview-wrap');
   if(event.status==='running'){preview.classList.add('running');preview.dataset.effect=event.effect||'';$('progress-preview-label').textContent=event.label||'';}
   else if(preview.dataset.effect===(event.effect||preview.dataset.effect)){preview.classList.remove('running');}
@@ -85,6 +85,7 @@ function drawAsset(asset){
     asset.cells.filter(cell=>cell.kind!=='total').forEach((cell,index)=>{
       const shape=polygon(svg,cell.box,'cell-box'+(cell.kind==='tax'?' tax':'')+(cell.row===state.selectedRow?' focused':''),(index%30)*.025);
       shape.dataset.row=cell.row;
+      shape.dataset.field=cell.role;
       if(asset.key==='rectified'&&cell.role==='name'&&needsMatchReview(state.rows.get(cell.row))){
         const underline=document.createElementNS(SVG_NS,'line');
         underline.setAttribute('x1',cell.box[3][0]+3);underline.setAttribute('y1',cell.box[3][1]-3);
@@ -109,6 +110,7 @@ function drawAsset(asset){
 }
 function openImage(key){const asset=state.assets.get(key);if(!asset)return;$('dialog-title').textContent=asset.title;$('dialog-image').replaceChildren(asset.stage.cloneNode(true));$('image-dialog').showModal();}
 function followProcessing(){
+  if(VisualSync.active){VisualSync.schedule();return;}
   cancelAnimationFrame(followProcessing.frame);
   followProcessing.frame=requestAnimationFrame(()=>{
     if(state.result||!state.activePhase)return;
@@ -121,38 +123,47 @@ function followProcessing(){
     }
   });
 }
-function animateRowTransfer(row){
-  if(row.kind==='total'||matchMedia('(prefers-reduced-motion: reduce)').matches)return;
-  const token=state.token;
-  // Measure after the processing scroll has positioned both panels.
-  requestAnimationFrame(()=>requestAnimationFrame(()=>{
-    if(token!==state.token)return; // VISUAL_SYNC_V2: animation may finish after OCR
-    const asset=state.assets.get('rectified');
-    const target=[...$('receipt-body').children].find(element=>Number(element.dataset.row)===row.row)?.children[1];
-    if(!asset||!target)return;
-    const source=[...asset.overlay.querySelectorAll('.cell-box')].find(shape=>Number(shape.dataset.row)===row.row);
-    if(!source)return; // VISUAL_SYNC_V2: never invent a source row location
-    const from=source.getBoundingClientRect(),to=target.getBoundingClientRect();
-    const left=$('input-scroll').getBoundingClientRect(),right=$('output-scroll').getBoundingClientRect();
-    if(!target.getClientRects().length||left.right>=right.right)return;
-    const clamp=(value,min,max)=>Math.max(min,Math.min(max,value));
-    const width=Math.min(260,left.width*.65,right.width*.65);
-    const x=clamp(from.left+from.width/2-width/2,left.left+12,left.right-width-12);
-    const y=clamp(from.top+from.height/2-24,left.top+12,left.bottom-60);
-    const endX=clamp(to.left,to.left,right.right-width-12),endY=clamp(to.top,right.top+12,right.bottom-60);
-    document.querySelectorAll('.receipt-transfer').forEach((item,index,items)=>{if(index<items.length-3)item.remove();});
-    const card=node('div','receipt-transfer');card.setAttribute('aria-hidden','true');
-    card.append(node('strong','',row.name??row.name_raw??'Строка чека'),node('span','',`${row.quantity??row.quantity_raw??'—'} × ${displayPrice(row.price??row.price_raw)}`));
-    Object.assign(card.style,{left:x+'px',top:y+'px',width:width+'px'});document.body.append(card);
-    const dx=endX-x,dy=endY-y;
-    const animation=card.animate([
-      {transform:'translate(0,0) scale(.94)',opacity:0},
-      {transform:`translate(${dx*.15}px,${dy*.15-18}px) scale(1)`,opacity:1,offset:.2},
-      {transform:`translate(${dx}px,${dy}px) scale(.96)`,opacity:1,offset:.85},
-      {transform:`translate(${dx}px,${dy}px) scale(1)`,opacity:0}
-    ],{duration:750,easing:'ease-in-out'});
-    animation.finished.catch(()=>{}).finally(()=>card.remove());
-  }));
+function receiptCell(row,field){
+  return $('receipt-body').querySelector(`tr[data-row="${Number(row)}"] [data-field="${field}"]`);
+}
+function visibleCellPoint(element,panel){
+  if(!element?.getClientRects().length)return null;
+  const rect=element.getBoundingClientRect(),view=panel.getBoundingClientRect();
+  const left=Math.max(rect.left,view.left,0),right=Math.min(rect.right,view.right,innerWidth);
+  const top=Math.max(rect.top,view.top,0),bottom=Math.min(rect.bottom,view.bottom,innerHeight);
+  return right-left>3&&bottom-top>3?{x:(left+right)/2,y:(top+bottom)/2,width:right-left}:null;
+}
+function animateCellTransfer(cell,registerCancel){
+  return new Promise(resolve=>{
+    let frame=null,card=null,started=null,done=false;
+    const token=state.token;
+    const land=()=>{if(done)return;done=true;cancelAnimationFrame(frame);card?.remove();resolve();};
+    registerCancel(land);
+    const tick=now=>{
+      if(done)return;
+      if(token!==state.token||document.hidden){land();return;}
+      const source=VisualSync.source(cell),target=receiptCell(cell.row,cell.field);
+      const from=visibleCellPoint(source,$('input-scroll')),to=visibleCellPoint(target,$('output-scroll'));
+      // Never substitute a viewport edge or an editor control for a receipt cell.
+      if(!from||!to){land();return;}
+      if(started===null){
+        started=now;card=node('div','receipt-transfer receipt-cell-transfer');
+        card.dataset.cellKey=VisualSync.key(cell.row,cell.field);card.setAttribute('aria-hidden','true');
+        card.textContent=cell.value;
+        const width=Math.max(32,Math.min(cell.field==='name'?300:110,from.width,to.width));
+        Object.assign(card.style,{width:width+'px',left:'0px',top:'0px'});document.body.append(card);
+      }
+      const progress=Math.min(1,(now-started)/650),ease=progress*progress*(3-2*progress);
+      const width=card.offsetWidth,height=card.offsetHeight;
+      const x=from.x+(to.x-from.x)*ease-width/2;
+      const y=from.y+(to.y-from.y)*ease-height/2-Math.sin(Math.PI*progress)*18;
+      card.style.transform=`translate(${x}px,${y}px)`;
+      card.style.opacity=String(Math.min(1,progress*7,(1-progress)*8));
+      if(progress===1){land();return;}
+      frame=requestAnimationFrame(tick);
+    };
+    frame=requestAnimationFrame(tick);
+  });
 }
 function stopTransferFlow(){
   clearInterval(startTransferFlow.timer);startTransferFlow.timer=null;
@@ -244,10 +255,11 @@ function makeReceiptRow(row,ordinal){
   const printedNumber=/^\d+$/.test(rawPrintedNumber)?rawPrintedNumber:recoveredNumber;
   const hasPrintedNumber=/^\d+$/.test(printedNumber)&&Number(printedNumber)>0;
   const numberCell=node('td',hasPrintedNumber?'':'inferred-number',hasPrintedNumber?printedNumber:String(ordinal));
+  numberCell.dataset.field='number';
   if(recoveredNumber&&printedNumber===recoveredNumber)numberCell.title='Номер повторно прочитан только из ячейки №.';
   else if(!hasPrintedNumber)numberCell.title='Номер не распознан: указан порядковый номер строки таблицы.';
   tr.append(numberCell);
-  const description=node('td');const kindNames={tax:'НДС',service:row.name_raw||'Доставка',total:'Итог',unreadable:'Не удалось прочитать название'};
+  const description=node('td');description.dataset.field='name';const kindNames={tax:'НДС',service:row.name_raw||'Доставка',total:'Итог',unreadable:'Не удалось прочитать название'};
   const name=row.name??row.name_raw;
   description.append(node('div','item-name',row.kind==='tax'&& !/[нН][дД][сС]/.test(name)?'НДС':name||kindNames[row.kind]||'—'));
   if(row.kind==='product'){
@@ -267,6 +279,7 @@ function makeReceiptRow(row,ordinal){
     description.append(debug);
   }
   tr.append(description,numericReceiptCell(row,'quantity'),numericReceiptCell(row,'price'));
+  VisualSync.maskRow(tr,row.row);
   return tr;
 }
 function renderRows(){
@@ -278,6 +291,7 @@ function renderRows(){
   $('receipt-area').hidden=false;$('review-note').hidden=!review.length;
   const asset=state.assets.get('rectified');if(asset)drawAsset(asset);
   renderReceiptErrors(state.result||{rows:[...state.rows.values()]});
+  VisualSync.schedule();
 }
 function showMathSuccess(){
   document.querySelector('.math-success-flash')?.remove();
@@ -431,6 +445,8 @@ function showReceiptMathWarning(result,previous){
 }
 function finish(result){
   if(!result)return;
+  state.stream?.close();state.stream=null;
+  if(VisualSync.deferFinish(result))return;
   window.ReceiptUploadGate?.finished(result);
   VisualSync.finished();
   window.OcrActivity?.finish(true);
@@ -462,7 +478,7 @@ function consume(event){
   else if(event.type==='boxes'){const asset=state.assets.get(event.target);if(asset){asset.boxes=event.boxes;drawAsset(asset); /* VISUAL_SYNC_V2: keep row cells during OCR */}logEvent(`${event.title}: ${event.boxes.length}`);}
   else if(event.type==='cells'){const asset=state.assets.get(event.target);if(asset){asset.cells=event.cells;drawAsset(asset);}logEvent(`${event.title} · ${event.cells.length} ячеек`);}
   else if(event.type==='header'){$('receipt-area').hidden=false;$('order-number').textContent=event.order_number?'№ '+event.order_number:'';$('receipt-date').textContent=event.date||'Дата не прочитана';}
-  else if(event.type==='draft_rows'){window.OcrActivity?.rows(event.rows);if(event.pass_similarity!==undefined)state.passSimilarity=event.pass_similarity;state.rows=new Map(event.rows.map(row=>[row.row,row]));renderRows();$('receipt-meta').textContent='Черновик из OCR · названия ещё не сверены';}
+  else if(event.type==='draft_rows'){window.OcrActivity?.rows(event.rows);if(event.pass_similarity!==undefined)state.passSimilarity=event.pass_similarity;const asset=state.assets.get('rectified');if(asset&&event.cells)asset.cells=event.cells;VisualSync.acceptDraft(event);state.rows=new Map(event.rows.map(row=>[row.row,row]));renderRows();$('receipt-meta').textContent='Черновик из OCR · названия ещё не сверены';}
   else if(event.type==='row'){state.rows.set(event.row.row,event.row);renderRows();focusRow(event.row.row);logEvent(event.title);}
   else if(event.type==='visual'){VisualSync.handle(event);}
   else if(event.type==='message'){window.OcrActivity?.message(event.title);$('process-subtitle').textContent=event.title;logEvent(event.title);}
@@ -470,7 +486,7 @@ function consume(event){
   else if(event.type==='complete'){finish(event.result);$('progress-preview-wrap').classList.remove('running');logEvent('Обработка завершена');}
   else if(event.type==='error')showError(event.title);
   if(event.type!=='complete'&&event.type!=='error')followProcessing();
-  // VISUAL_SYNC_V2: transfers are triggered by raw OCR row_ready events, not catalog matching.
+  // Per-cell transfers follow completed OCR boxes, independently of catalog matching.
 }
 function listen(jobId, token){
   state.stream=new EventSource(`/api/jobs/${jobId}/events`);
@@ -487,7 +503,7 @@ async function upload(file){
   if(!file)return;
   if(file.size>state.maxUpload){toast(`Максимальный размер фото — ${Math.floor(state.maxUpload/1024/1024)} МБ`);return;}
   if(file.type&&!['image/jpeg','image/png','image/webp'].includes(file.type)){toast('Выберите фотографию JPG, PNG или WEBP');return;}
-  reset();window.OcrActivity?.start();const token=state.token;window.ReceiptUploadGate?.begin(token);$('drop-zone').hidden=true;$('input-note').hidden=false;state.blob=URL.createObjectURL(file);
+  reset();VisualSync.begin();window.OcrActivity?.start();const token=state.token;window.ReceiptUploadGate?.begin(token);$('drop-zone').hidden=true;$('input-note').hidden=false;state.blob=URL.createObjectURL(file);
   logEvent('Начало обработки: '+file.name);
   const preview=new Image();preview.src=state.blob;preview.onload=()=>{if(token===state.token&&!state.assets.has('original'))addArtifact({key:'original',role:'original',title:'Исходное фото',subtitle:file.name,url:preview.src,width:preview.naturalWidth,height:preview.naturalHeight});};
   $('process-title').textContent='Загружаем фотографию';$('process-subtitle').textContent=file.name;
@@ -636,22 +652,23 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadStock(
 // VISUAL_SYNC_V2_BEGIN — shared SSE state for the image and the electronic receipt.
 // No timers simulate OCR progress. Row cards are an animation of ALREADY received OCR text.
 const VisualSync = {
-  scanTarget: null,
-  scanPassUsed: false,
-  queued: [],
-  seen: new Set(),
-  queueTimer: null,
-  activeToken: 0,
+  scanTarget:null, scanPassUsed:false, active:false, generation:0, frame:null,
+  pending:new Map(), inFlight:new Map(), revealed:new Set(),
+  finishing:false, pendingResult:null, cellProtocol:false,
+  get presenting(){return this.active&&(this.pending.size>0||this.inFlight.size>0);},
+  key(row,field){return `${Number(row)}:${field}`;},
+  source(cell){return state.assets.get('rectified')?.overlay.querySelector(`.cell-box[data-row="${cell.row}"][data-field="${cell.field}"]`);},
   reset(){
-    clearTimeout(this.queueTimer);this.queueTimer=null;
-    this.queued.length=0;this.seen.clear();this.stopScan();
-    this.activeToken=state.token;
+    this.generation++;this.active=false;this.finishing=false;this.pendingResult=null;
+    cancelAnimationFrame(this.frame);this.frame=null;
+    this.inFlight.forEach(flight=>flight.cancel?.());this.inFlight.clear();
+    this.pending.clear();this.revealed.clear();this.cellProtocol=false;this.stopScan();
     document.querySelectorAll('.receipt-transfer').forEach(el=>el.remove());
   },
+  begin(){this.reset();this.active=true;},
   finished(){this.stopScan();},
   startScan(target){
-    this.stopScan();
-    this.scanTarget=target;this.scanPassUsed=false;
+    this.stopScan();this.scanTarget=target;this.scanPassUsed=false;
     state.visualScanTarget=target;state.visualScanPassed=false;
     const asset=state.assets.get(target);
     if(asset){asset.card.classList.add('scan-running');drawAsset(asset);}
@@ -661,36 +678,93 @@ const VisualSync = {
     this.scanTarget=null;state.visualScanTarget=null;state.visualScanPassed=false;
     if(target){const asset=state.assets.get(target);if(asset){asset.card.classList.remove('scan-running');drawAsset(asset);}}
   },
-  rowReady(row){
-    if(!row||!Number.isInteger(Number(row.row))||!['product','tax','service'].includes(row.kind))return;
-    const id=Number(row.row);
-    if(this.seen.has(id)||(!row.name&&!row.quantity&&!row.price))return;
-    this.seen.add(id);this.queued.push({...row,row:id});
-    this.pump();
+  maskRow(element,row){
+    if(!this.active)return;
+    for(const cell of element.querySelectorAll('[data-field]')){
+      if(this.revealed.has(this.key(row,cell.dataset.field)))continue;
+      const content=node('div','receipt-cell-content');content.append(...cell.childNodes);cell.append(content);
+      cell.classList.add('receipt-cell-awaiting');cell.setAttribute('aria-busy','true');
+    }
   },
-  pump(){
-    if(this.queueTimer!==null||!this.queued.length)return;
-    const token=state.token;
-    const next=()=>{
-      this.queueTimer=null;
-      if(token!==state.token){this.queued.length=0;return;}
-      const row=this.queued.shift();if(!row)return;
-      // The table and its cell coordinates may arrive after the event; defer briefly.
-      const asset=state.assets.get('rectified');
-      const hasSource=!!asset?.overlay.querySelector(`.cell-box[data-row="${row.row}"]`);
-      const hasTarget=[...$('receipt-body').children].some(el=>Number(el.dataset.row)===row.row);
-      if(hasSource&&hasTarget){
-        focusRow(row.row);
-        animateRowTransfer({row:row.row,kind:row.kind,name_raw:row.name,
-          quantity_raw:row.quantity,price_raw:row.price});
-        if(!state.result)$('process-subtitle').textContent=row.kind==='tax'
-          ?'Прочитана строка НДС · ожидает проверки'
-          :`Получена строка №${row.row} · название, количество и цена пока не проверены`;
+  reveal(key){
+    this.revealed.add(key);
+    const [row,field]=key.split(':'),cell=receiptCell(row,field);
+    cell?.classList.remove('receipt-cell-awaiting');cell?.removeAttribute('aria-busy');
+  },
+  acceptCell(cell){
+    if(!this.active||!Number.isInteger(Number(cell.row))||
+       !['number','name','quantity','price'].includes(cell.field)||!String(cell.value??'').trim())return;
+    cell={...cell,row:Number(cell.row),value:String(cell.value)};
+    const key=this.key(cell.row,cell.field);
+    if(this.revealed.has(key)||this.inFlight.has(key))return;
+    if(document.hidden||matchMedia('(prefers-reduced-motion: reduce)').matches){this.reveal(key);return;}
+    this.pending.set(key,cell);this.schedule();
+  },
+  acceptRows(rows){
+    for(const row of rows||[]){
+      if(!['product','tax','service'].includes(row.kind))continue;
+      for(const field of ['number','name','quantity','price']){
+        const value=field==='number'?(row.item_number_raw||row.item_number_recovered):row[field+'_raw'];
+        this.acceptCell({row:row.row,field,value,kind:row.kind});
       }
-      // Missing layout or table is not a reason to invent a source position.
-      this.queueTimer=setTimeout(next,this.queued.length>18?160:300);
-    };
-    next();
+    }
+  },
+  acceptDraft(event){
+    if(!this.active&&!state.result)this.begin();
+    if(Array.isArray(event.ready_cells)){
+      this.cellProtocol=true;event.ready_cells.forEach(cell=>this.acceptCell(cell));
+    }else this.acceptRows(event.rows); // Compatibility with previously saved SSE jobs.
+  },
+  rowReady(row){
+    if(!row||this.cellProtocol)return;
+    this.acceptRows([{...row,name_raw:row.name,quantity_raw:row.quantity,price_raw:row.price}]);
+  },
+  schedule(){
+    if(!this.active||this.frame!==null)return;
+    this.frame=requestAnimationFrame(()=>{this.frame=null;this.flush();});
+  },
+  align(panel,element){
+    const rect=element.getBoundingClientRect(),view=panel.getBoundingClientRect();
+    if(rect.top<view.top+12||rect.bottom>view.bottom-12)panel.scrollTop+=rect.top-view.top-16;
+  },
+  launch(key,cell){
+    const generation=this.generation,flight={cancel:null};this.pending.delete(key);this.inFlight.set(key,flight);
+    flight.promise=animateCellTransfer(cell,cancel=>flight.cancel=cancel).finally(()=>{
+      if(generation!==this.generation)return;
+      this.inFlight.delete(key);this.reveal(key);this.checkFinished();this.schedule();
+    });
+  },
+  flush(){
+    if(!this.active)return;
+    if(document.hidden||matchMedia('(prefers-reduced-motion: reduce)').matches){
+      this.pending.forEach((_,key)=>this.reveal(key));this.pending.clear();
+      this.inFlight.forEach(flight=>flight.cancel?.());this.checkFinished();return;
+    }
+    const candidates=[...this.pending].filter(([,cell])=>this.source(cell)?.getClientRects().length&&receiptCell(cell.row,cell.field)?.getClientRects().length);
+    if(!this.inFlight.size&&candidates.length){
+      const cell=candidates[0][1];
+      this.align($('input-scroll'),this.source(cell));
+      this.align($('output-scroll'),receiptCell(cell.row,cell.field));
+    }
+    for(const [key,cell] of candidates){
+      if(visibleCellPoint(this.source(cell),$('input-scroll'))&&visibleCellPoint(receiptCell(cell.row,cell.field),$('output-scroll')))this.launch(key,cell);
+    }
+    // Missing geometry never invents a destination; final data is still available.
+    if(this.finishing&&!this.inFlight.size&&this.pending.size){
+      this.pending.forEach((_,key)=>this.reveal(key));this.pending.clear();
+    }
+    this.checkFinished();
+  },
+  deferFinish(result){
+    if(!this.active)return false;
+    this.finishing=true;this.pendingResult=result;
+    state.rows=new Map(result.rows.map(row=>[row.row,row]));
+    this.acceptRows(result.rows);renderRows();this.schedule();return true;
+  },
+  checkFinished(){
+    if(!this.finishing||this.pending.size||this.inFlight.size)return;
+    const result=this.pendingResult;this.pendingResult=null;this.finishing=false;this.active=false;
+    cancelAnimationFrame(this.frame);this.frame=null;finish(result);
   },
   handle(event){
     if(event.schema!=='visual-sync-2.0')return;
@@ -698,16 +772,11 @@ const VisualSync = {
       case 'scan_start':this.startScan(event.target);break;
       case 'scan_stop':this.stopScan();break;
       case 'row_ready':this.rowReady(event.row);break;
-      case 'geometry_found':
-      case 'geometry_ready':
-      case 'rows_ready':
-      case 'checking':
-      case 'matching':
-        if(event.message)$('process-subtitle').textContent=event.message;
-        break;
+      default:if(event.message&&!this.finishing)$('process-subtitle').textContent=event.message;
     }
   }
 };
+document.addEventListener('visibilitychange',()=>{if(document.hidden&&VisualSync.active)VisualSync.flush();});
 // VISUAL_SYNC_V2_END
 
 

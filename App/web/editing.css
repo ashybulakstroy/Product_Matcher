@@ -48,3 +48,9 @@ body.debug-mode .debug-only[hidden]{display:none!important}
 
 .receipt-math-alert{position:fixed;z-index:100;top:95px;right:24px;width:min(440px,calc(100vw - 32px));display:flex;flex-wrap:wrap;align-items:center;gap:8px 12px;padding:16px 18px;border:2px solid #c44e5a;border-radius:12px;background:#fff4f4;color:#8e1b2b;box-shadow:0 10px 32px #5f142c33;font-size:14px;line-height:1.4}
 .receipt-math-alert strong,.receipt-math-alert span{flex-basis:100%}.receipt-math-alert div{display:flex;gap:8px}.receipt-math-alert button{padding:7px 12px;border:1px solid #c44e5a;border-radius:6px;background:#fff;color:#8e1b2b}.receipt-math-alert button:hover{background:#ffe5e7}
+
+/* A cell reveals its OCR value only when its own transfer lands. */
+.receipt-cell-awaiting{position:relative}
+.receipt-cell-awaiting>.receipt-cell-content{visibility:hidden}
+.receipt-cell-awaiting::after{content:"";position:absolute;left:12px;right:12px;top:50%;height:7px;border-radius:5px;background:#edf2f9;pointer-events:none}
+.receipt-cell-transfer{padding:7px 10px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-height:30px}
