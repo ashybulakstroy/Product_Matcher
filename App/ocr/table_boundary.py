@@ -95,6 +95,18 @@ def _internal_vertical_span(segments: np.ndarray, bounds: tuple) -> float:
     return sum(lengths) / 2
 
 
+def _dense_vertical_bars(binary: np.ndarray, bounds: tuple) -> bool:
+    """Reject barcode fragments whose thick bars mimic a small printed grid."""
+    x, y, w, h = bounds
+    if h < w * .8:
+        return False
+    region = binary[y:y+h, x:x+w]
+    persistent = np.mean(region > 0, axis=0) >= .65
+    transitions = np.diff(np.r_[False, persistent, False].astype(np.int8))
+    bars = int(np.count_nonzero(transitions == 1))
+    return bars >= 4 and float(np.mean(persistent)) >= .32
+
+
 def detect_table_boundary(image: np.ndarray, options: BoundaryOptions | None = None) -> dict:
     """Return an observed polygon or explicit needs_review, never a fabricated table.
 
@@ -133,6 +145,8 @@ def detect_table_boundary(image: np.ndarray, options: BoundaryOptions | None = N
                 if x < 2 or y < 2 or x + w > width - 2 or y + h > height - 2:
                     continue
                 if area / (w * h) < options.min_box_fill:
+                    continue
+                if _dense_vertical_bars(binary, bounds):
                     continue
                 support = _grid_support(segments, bounds, options)
                 local = contour - np.array([[[x, y]]], np.int32)

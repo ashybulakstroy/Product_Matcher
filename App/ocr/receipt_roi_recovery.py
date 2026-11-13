@@ -16,6 +16,127 @@ import numpy as np
 VERSION = "long-receipt-roi-1.0"
 
 
+def recover_compact_table(image, detector, previous, recognize_header=None):
+    """Additional fallback for short tables occupying a small part of the paper.
+
+    Keep the established long-table recovery unchanged. A compact replacement
+    requires early verification of header words or a complete header grid.
+    """
+    from App.ocr.table_verification import verify_table_candidate
+
+    box, paper = find_paper_roi(image)
+    report = dict(status='not_recovered', paper=paper, attempts=[])
+    if box is None:
+        return previous, report
+    x0, y0, x1, y1 = box
+    crop = image[y0:y1, x0:x1]
+    for scale in (1.5, 2.0):
+        if max(crop.shape[:2]) * scale > 2400:
+            break
+        sample = cv2.resize(crop, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+        candidate = detector(sample)
+        polygon = candidate.get('polygon')
+        if polygon is None:
+            report['attempts'].append(dict(scale=scale, reason='no_boundary'))
+            continue
+        points = np.asarray(polygon, dtype=np.float32).copy()
+        lo, hi = points.min(axis=0), points.max(axis=0)
+        ch, cw = sample.shape[:2]
+        if not (np.isfinite(points).all() and hi[0]-lo[0] >= cw*.57 and
+                hi[1]-lo[1] >= (hi[0]-lo[0])*.18 and
+                lo[0] >= 3 and lo[1] >= ch*.04 and hi[0] <= cw-3 and hi[1] <= ch*.94):
+            report['attempts'].append(dict(scale=scale, reason='implausible_compact_grid'))
+            continue
+        points[:, 0] = points[:, 0]/scale + x0
+        points[:, 1] = points[:, 1]/scale + y0
+        candidate = dict(candidate, polygon=points)
+        verification = verify_table_candidate(image, candidate, recognize_header)
+        report['attempts'].append(dict(scale=scale, verification=verification))
+        if verification['status'] != 'confirmed':
+            continue
+        candidate['warnings'] = list(candidate.get('warnings', [])) + ['compact_paper_roi_verified']
+        report.update(status='recovered', scale=scale, verification=verification,
+                      table_polygon=points.tolist())
+        return candidate, report
+    return previous, report
+
+
+def recover_table_boundary(image, detector, previous, full_grid_detector=None):
+    """Recheck small background contours using independently observed tall grids.
+
+    A bright paper component can merge with pale background. Narrow overlapping
+    windows change the grid scale without guessing paper corners or using OCR.
+    A replacement needs eight horizontal and three vertical observed rules,
+    must span most of the photo height and must not touch the window edges.
+    """
+    height, width = image.shape[:2]
+    polygon = previous.get('polygon')
+    if polygon is not None:
+        pts = np.asarray(polygon).reshape(-1, 2)
+        if np.ptp(pts[:, 1]) >= height * .20 and np.ptp(pts[:, 0]) >= width * .16:
+            return previous, dict(version=VERSION, status='not_needed', ocr_calls=0)
+        report = dict(version=VERSION, status='not_recovered',
+                      trigger='small_boundary_candidate', attempts=[], ocr_calls=0)
+    else:
+        boundary, report = recover_after_boundary_failure(image, detector, previous, full_grid_detector)
+        if boundary.get('polygon') is not None:
+            return boundary, report
+    # Landscape orientation is handled by the existing orientation detector.
+    if height < width * 1.3:
+        return previous, report
+    candidates = []
+    for center in (.35, .50, .65):
+        left, right = round(width * (center - .25)), round(width * (center + .25))
+        sample = image[:, left:right]
+        candidate = detector(sample)
+        valid, reason = _check_candidate(candidate, sample.shape[:2], min_support=8)
+        if valid:
+            pts = np.asarray(candidate['polygon'], dtype=np.float32)
+            lo, hi = pts.min(axis=0), pts.max(axis=0)
+            valid = bool(hi[1] - lo[1] >= height * .55 and
+                         (hi[1] - lo[1]) / max(1, hi[0] - lo[0]) >= 1.5 and
+                         lo[0] >= 5 and hi[0] <= sample.shape[1] - 6)
+            if not valid:
+                reason = 'short_or_clipped_grid'
+        report['attempts'].append(dict(source='vertical_window', box=[left, 0, right, height],
+                                       valid=valid, reason=reason))
+        if valid:
+            pts = pts.copy()
+            if full_grid_detector is not None:
+                # Broken upper separators can attach words to the contour.
+                # Use independently fitted printed-rule endpoints for the sides,
+                # retaining the observed full contour's top and bottom extent.
+                grid, evidence = full_grid_detector(sample)
+                if grid is not None and int(evidence.get('rule_count', 0)) >= 8:
+                    tl, tr, br, bl = np.asarray(grid, dtype=np.float32)
+                    top, bottom = float(pts[:, 1].min()), float(pts[:, 1].max())
+                    grid_top, grid_bottom = max(tl[1], tr[1]), min(bl[1], br[1])
+                    if (grid_bottom - grid_top >= height * .55 and
+                            0 <= grid_top - top <= height * .25 and
+                            0 <= bottom - grid_bottom <= height * .10):
+                        def edge_x(a, b, y):
+                            return float(a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]))
+                        envelope = np.array([[edge_x(tl, bl, top), top],
+                                             [edge_x(tr, br, top), top],
+                                             [edge_x(tr, br, bottom), bottom],
+                                             [edge_x(tl, bl, bottom), bottom]], np.float32)
+                        if (envelope[:, 0].min() >= 5 and
+                                envelope[:, 0].max() <= sample.shape[1] - 6):
+                            candidate = dict(candidate, observed_contour=pts.tolist(),
+                                             grid_envelope=evidence, status='needs_review')
+                            pts = envelope
+            pts[:, 0] += left
+            recovered = dict(candidate, polygon=pts,
+                             warnings=list(candidate.get('warnings', [])) + ['vertical_window_grid_recovery'])
+            candidates.append(recovered)
+    if not candidates:
+        return previous, report
+    boundary = max(candidates, key=lambda b: float(np.ptp(b['polygon'][:, 1])))
+    report.update(status='recovered', source='vertical_window_grid',
+                  table_polygon=boundary['polygon'].tolist())
+    return boundary, report
+
+
 def _json_number(value: Any) -> float | int:
     if isinstance(value, (float, np.floating)):
         return float(value)

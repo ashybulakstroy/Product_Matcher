@@ -26,7 +26,8 @@ from App.ocr.ocr_catalog_eval import (ROOT, PASS_SIMILARITY, CatalogMatcher, ali
 from App.ocr.ocr_run import MODEL
 from App.ocr.table_boundary import detect_table_boundary
 from App.ocr.full_grid_boundary import detect_full_grid_boundary
-from App.ocr.receipt_roi_recovery import recover_after_boundary_failure
+from App.ocr.receipt_roi_recovery import recover_table_boundary, recover_compact_table
+from App.ocr.table_verification import verify_table_candidate
 from App.ocr.receipt_editing import initialize_row, save_receipt, update_receipt
 from App.ocr.manual_mappings import ManualMappings
 from App.ocr.quantity_cells import recover_quantities
@@ -34,6 +35,7 @@ from App.ocr.numeric_cell_split import recover as recover_numeric_cells
 from App.ocr.row_cell_split import repair as split_merged_product_rows
 from App.ocr.numeric_recovery import recover_numeric_receipt
 from App.ocr.selective_number_ocr import recover_number_cells
+from App.ocr.selective_text_recovery import recover_text_names
 
 MAX_PIXELS = 25_000_000
 
@@ -231,14 +233,38 @@ class ReceiptPipeline:
         )
         job.phase("geometry", 13, "Ищем границы товарной таблицы")
         boundary = detect_table_boundary(image)
-        if boundary["polygon"] is None:
-            boundary, paper_roi_report = recover_after_boundary_failure(
-                image, detect_table_boundary, boundary, detect_full_grid_boundary,
-            )
+        boundary, paper_roi_report = recover_table_boundary(
+            image, detect_table_boundary, boundary, detect_full_grid_boundary,
+        )
+        if paper_roi_report['status'] != 'not_needed':
             job.json_file("paper_roi_recovery.json", paper_roi_report)
             if paper_roi_report["status"] == "recovered":
                 job.publish("message", title="Товарная таблица найдена на узком чеке без повторного OCR",
                             progress=21)
+        header_ocr_calls = 0
+        def recognize_table_header(header):
+            nonlocal header_ocr_calls
+            self.resources()
+            with self.ocr_lock:
+                header_ocr_calls += 1
+                return self.engine(header)[0]
+        emit_status(job, 'geometry', 'Проверяем сетку и заголовок таблицы',
+                    details='Подтверждаем область перед распознаванием товаров')
+        verification = verify_table_candidate(image, boundary, recognize_table_header)
+        selection = dict(initial=verification, fallback=None)
+        if verification['status'] == 'rejected':
+            alternative, compact_report = recover_compact_table(
+                image, detect_table_boundary, boundary, recognize_table_header)
+            selection['fallback'] = compact_report
+            if compact_report['status'] == 'recovered':
+                boundary = alternative
+                verification = compact_report['verification']
+                job.publish('message', title='Таблица найдена и проверена по заголовку и сетке', progress=22)
+            elif verification['status'] == 'rejected':
+                boundary = dict(boundary, polygon=None)
+        selection.update(final=verification, header_ocr_calls=header_ocr_calls,
+                         existing_boundary_preserved=verification['status'] == 'uncertain')
+        job.json_file('table_verification.json', selection)
         polygon = boundary["polygon"]
         if polygon is None:
             if orientation_mode == "normal":
@@ -427,11 +453,24 @@ class ReceiptPipeline:
         except Exception as error:
             job.json_file('numeric_recovery.json',dict(status='error',detail=str(error)))
             job.publish('message',title='Повторная проверка чисел недоступна; исходный OCR сохранён',progress=79)
+        try:
+            rows, text_recovery_report = recover_text_names(
+                rows, aligned, rectified, layout,
+                rapidocr=lambda crop: self.engine(crop)[0], ocr_lock=self.ocr_lock,
+                output_dir=job.directory / 'text_recovery',
+            )
+            job.json_file('selective_text_recovery.json', text_recovery_report)
+            count = len(text_recovery_report['stage1_applied']) + len(text_recovery_report['stage2_applied'])
+            if count:
+                job.publish('message', title=f'Уточнено наименований по OCR: {count}', progress=79)
+        except Exception as error:
+            job.json_file('selective_text_recovery.json', dict(status='error', detail=str(error)))
+            job.publish('message', title='Повторная проверка названий недоступна; исходный текст сохранён', progress=79)
         cells = grid_cells(layout, rows)
         job.json_file("layout.json", dict(layout=layout, cells=cells, segmentation=segmentation))
         job.publish("cells", target="rectified", cells=cells, title="Ячейки выделены, НДС — отдельная строка", progress=79)
         for row in rows:
-            row.update(name=row["name_raw"], quantity=row.get("quantity",row["quantity_raw"]), price=row.get("price",row["price_raw"]), stage="ocr",
+            row.update(name=row.get('name_recovered', row["name_raw"]), quantity=row.get("quantity",row["quantity_raw"]), price=row.get("price",row["price_raw"]), stage="ocr",
                        match=None, articles=[], similarity=None, needs_review=False,
                        ocr_name_confidence_pct=round(row["ocr_confidence"]*100, 2))
         job.publish("draft_rows", rows=rows, pass_similarity=PASS_SIMILARITY, title="OCR готов. Начинаем подбор названий", progress=80)
@@ -449,7 +488,7 @@ class ReceiptPipeline:
         emit_status(job, "matching", "Сопоставляем товары со справочником",
                     details=f"Всего товаров: {total_products}")
         for index, row in enumerate(rows):
-            row["match"] = self.matcher.match(row["name_raw"]) if row["kind"] == "product" else dict(status="excluded_"+row["kind"], best=None, top_matches=[])
+            row["match"] = self.matcher.match(row.get('name_recovered', row["name_raw"])) if row["kind"] == "product" else dict(status="excluded_"+row["kind"], best=None, top_matches=[])
             row["ocr_name_confidence_pct"] = round(row["ocr_confidence"]*100, 2) if row["name_raw"].strip() else None
             best = row["match"]["best"] or {}
             row["articles"] = sorted({source["article"] for source in best.get("sources", []) if source["article"]})

@@ -149,6 +149,9 @@ def test_integrated_numeric_recovery_no_full_rescan_when_two_prices_recovered():
 def test_integrated_numeric_recovery_retains_existing_fallback_when_prices_unconfirmed(monkeypatch):
     from App.ocr.numeric_recovery import recover_numeric_receipt
     import App.ocr.numeric_recovery as recovery
+    import App.ocr.numeric_fallback_ensemble as ensemble
+    # Isolate the legacy fallback; the optional ensemble has its own tests.
+    monkeypatch.setattr(ensemble, 'load_ensemble_options', lambda: {'enabled': False})
     fallback=[]
     def no_fallback_proposals(image,tasks,*args):
         fallback.extend(tasks)

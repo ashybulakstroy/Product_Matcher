@@ -12,6 +12,7 @@ output/
 eval_outputs/
 experiment_outputs/
 .cache/
+models/tesseract/*.traineddata
 data/**
 !data/**/
 !data/**/*.md
