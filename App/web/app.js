@@ -126,6 +126,63 @@ function followProcessing(){
 function receiptCell(row,field){
   return $('receipt-body').querySelector(`tr[data-row="${Number(row)}"] [data-field="${field}"]`);
 }
+
+// Original-photo evidence follows the physical cell, even after manual edits.
+const CellPhotoPreview={
+  active:null,timer:null,generation:0,x:0,y:0,
+  panel(){
+    if(this.element)return this.element;
+    const panel=node('div','cell-photo-preview');panel.id='cell-photo-preview';panel.hidden=true;
+    panel.setAttribute('role','tooltip');
+    this.label=node('div','cell-photo-preview-label');this.image=node('img');
+    this.image.alt='Фрагмент исходного фото чека';
+    panel.append(this.label,this.image);document.body.append(panel);this.element=panel;return panel;
+  },
+  hide(){clearTimeout(this.timer);this.generation++;this.active?.classList.remove('cell-photo-hover');this.active=null;if(this.element)this.element.hidden=true;},
+  position(){
+    if(!this.element||this.element.hidden)return;
+    const bounds=this.element.getBoundingClientRect();
+    let left=this.x+18,top=this.y+18;
+    if(left+bounds.width>innerWidth-8)left=this.x-bounds.width-18;
+    if(top+bounds.height>innerHeight-8)top=this.y-bounds.height-18;
+    this.element.style.left=Math.max(8,Math.min(left,innerWidth-bounds.width-8))+'px';
+    this.element.style.top=Math.max(8,Math.min(top,innerHeight-bounds.height-8))+'px';
+  },
+  enter(cell,event){
+    if(this.active===cell)return;
+    this.hide();if(!state.result||!state.job)return;
+    const row=cell.closest('tr[data-row]')?.dataset.row,field=cell.dataset.field;
+    if(!row||!['number','name','quantity','price'].includes(field))return;
+    this.active=cell;this.x=event.clientX;this.y=event.clientY;
+    const generation=this.generation,job=state.job,token=state.token;
+    this.timer=setTimeout(()=>{
+      const panel=this.panel();
+      const labels={number:'Номер',name:'Название',quantity:'Количество',price:'Цена'};
+      this.label.textContent=`Оригинал · строка ${row} · ${labels[field]}`;
+      this.image.onload=()=>{
+        if(generation!==this.generation||job!==state.job||token!==state.token||!cell.isConnected)return;
+        this.image.style.width=Math.min(540,Math.max(160,this.image.naturalWidth*2))+'px';
+        cell.classList.add('cell-photo-hover');panel.hidden=false;this.position();
+      };
+      this.image.onerror=()=>{if(generation===this.generation)this.hide();};
+      this.image.src=`/api/jobs/${encodeURIComponent(job)}/cell-preview?row=${encodeURIComponent(row)}&field=${field}`;
+    },180);
+  }
+};
+$('receipt-body').addEventListener('pointerover',event=>{
+  if(event.pointerType==='touch')return;
+  const cell=event.target.closest('td[data-field]');if(cell)CellPhotoPreview.enter(cell,event);
+});
+$('receipt-body').addEventListener('pointermove',event=>{
+  if(event.pointerType==='touch')return;
+  const cell=event.target.closest('td[data-field]');if(cell&&CellPhotoPreview.active!==cell)CellPhotoPreview.enter(cell,event);
+  CellPhotoPreview.x=event.clientX;CellPhotoPreview.y=event.clientY;CellPhotoPreview.position();
+});
+$('receipt-body').addEventListener('pointerout',event=>{if(CellPhotoPreview.active&&!CellPhotoPreview.active.contains(event.relatedTarget))CellPhotoPreview.hide();});
+document.addEventListener('scroll',()=>CellPhotoPreview.hide(),true);
+window.addEventListener('resize',()=>CellPhotoPreview.hide());
+window.addEventListener('blur',()=>CellPhotoPreview.hide());
+document.addEventListener('keydown',event=>{if(event.key==='Escape')CellPhotoPreview.hide();});
 function visibleCellPoint(element,panel){
   if(!element?.getClientRects().length)return null;
   const rect=element.getBoundingClientRect(),view=panel.getBoundingClientRect();
@@ -283,6 +340,7 @@ function makeReceiptRow(row,ordinal){
   return tr;
 }
 function renderRows(){
+  CellPhotoPreview.hide();
   const rows=[...state.rows.values()].filter(row=>row.kind!=='total').sort((a,b)=>a.row-b.row);const products=rows.filter(row=>row.kind==='product');const review=rows.filter(row=>row.needs_review);
   $('product-count').textContent=productLabel(products.length);$('review-count').textContent=review.length;
   const selected=state.reviewOnly?rows.filter(row=>row.needs_review):rows;
@@ -407,6 +465,7 @@ async function saveEditedRow(){
   await sendEdit(payload);
 }
 function reset(){
+  CellPhotoPreview.hide();
   window.ReceiptUploadGate?.reset();
   VisualSync.reset();
   window.OcrActivity?.finish(false);

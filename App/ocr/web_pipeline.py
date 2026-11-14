@@ -35,6 +35,7 @@ from App.ocr.manual_mappings import ManualMappings
 from App.ocr.quantity_cells import recover_quantities
 from App.ocr.numeric_cell_split import recover as recover_numeric_cells
 from App.ocr.row_cell_split import repair as split_merged_product_rows
+from App.ocr.grid_first_rows import reconstruct_rows, preserve_source_columns
 from App.ocr.numeric_recovery import recover_numeric_receipt
 from App.ocr.selective_number_ocr import recover_number_cells
 from App.ocr.selective_text_recovery import recover_text_names
@@ -323,6 +324,9 @@ class ReceiptPipeline:
         else:
             rectified, map_x, map_y, metadata = rectify_table(
                 image, polygon, trust_top=boundary["status"]=="detected")
+        (rectified, map_x, map_y, metadata), source_grid_report = preserve_source_columns(
+            image, polygon, rectified, map_x, map_y, metadata)
+        job.json_file('source_grid_columns.json', source_grid_report)
         warnings.extend(metadata["warnings"])
         subtitle = {"wave_grid":"Выпрямлены волны по внутренней сетке; ячейка итога сохранена",
                     "grid_curvature_v2":"Выпрямлены изогнутые строки по V2-сетке; ячейка итога сохранена",
@@ -413,6 +417,21 @@ class ReceiptPipeline:
         boundaries, segmentation = choose_row_boundaries(aligned, layout)
         layout["row_boundaries"] = enforce_cell_boundaries(aligned, layout, boundaries)
         rows = parse_rows(aligned, layout, layout["row_boundaries"])
+        def _grid_first_read_name(crop):
+            with self.ocr_lock:
+                return self.engine(crop)[0]
+        def _grid_first_read_numbers(images):
+            with self.ocr_lock:
+                return self.engine.text_recognizer(images)[0]
+        rows, grid_first_report = reconstruct_rows(
+            rectified, layout, aligned, rows,
+            read_name=lambda crop: _grid_first_read_name(crop),
+            read_numeric=lambda images: _grid_first_read_numbers(images),
+            prefer_printed_bands=metadata.get('method') == 'source_grid_crop',
+        )
+        job.json_file('grid_first_rows.json', grid_first_report)
+        if grid_first_report['status'] == 'segmented_pending_numeric_check':
+            job.publish('message', title=f"Товарные строки восстановлены по сетке: {len(rows)}; проверяем цифры", progress=75)
         total_candidates = [line for line in aligned if line["center"][1] >= layout["body_bottom"]-5
                             and line["center"][0] > layout["name_right"] and re.search(r"\d[.,]\d{2}", line["text"])]
         total = max(total_candidates,key=lambda line:line["center"][1])["text"] if total_candidates else ""

@@ -674,7 +674,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
                 with store.lock:
                     jobs = sorted(store.jobs.values(), key=lambda job:job.created_at, reverse=True)[:12]
                 return self.send_json([dict(id=job.id, filename=job.filename, status=job.status) for job in jobs])
-            route = re.fullmatch(r"/api/jobs/([a-f0-9]{32})(?:/(events|files/[^/]+|invoice|invoice\.pdf))?", path)
+            route = re.fullmatch(r"/api/jobs/([a-f0-9]{32})(?:/(events|files/[^/]+|invoice|invoice\.pdf|cell-preview))?", path)
             if not route:
                 return self.send_json(dict(error="Адрес не найден"), 404)
             job = store.get(route[1])
@@ -685,6 +685,15 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
                 return self.send_json(job.public())
             if suffix == "events":
                 return self.events(job, parts.query)
+            if suffix == 'cell-preview':
+                from App.ocr.cell_preview import preview_png
+                query = parse_qs(parts.query)
+                try:
+                    row = int(query.get('row', [''])[0])
+                    data = preview_png(job.directory, row, query.get('field', [''])[0])
+                except (ValueError, KeyError, OSError):
+                    return self.send_json(dict(error='Фрагмент исходного фото пока недоступен'), 404)
+                return self.send_data(data, 'image/png')
             if suffix == "invoice":
                 with job.condition:
                     if job.status != "done" or not job.result:
