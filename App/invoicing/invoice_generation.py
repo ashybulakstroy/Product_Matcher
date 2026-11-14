@@ -228,14 +228,38 @@ def source_fingerprint(row):
     return hashlib.sha256(json.dumps(fields, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
+def _finite_number(value):
+    try:
+        number = Decimal(str(value))
+    except (ArithmeticError, ValueError, TypeError):
+        return None
+    return number if number.is_finite() else None
+
+
 def build_generation(receipt, selections=None, suggest=False, database_id=None, *, vat_in_line_amounts=True, preserve_receipt_quantities=False):
     database_id = database_id or database_context()
-    learned = apply_training_pairs(receipt, database_id=database_id)
+    # An unresolved OCR cell must not crash the invoice preview. Keep the row,
+    # use zero only for the draft arithmetic, and let warnings block readiness
+    # until the operator corrects the value.
+    source_rows = []
+    invalid_numbers = []
+    for row in receipt.get("items", []):
+        item = dict(row)
+        for field in ("quantity", "price"):
+            if _finite_number(item.get(field)) is None:
+                invalid_numbers.append((item.get("row_id") or item.get("name"), field,
+                                        item.get(field)))
+                item[field] = "0"
+        source_rows.append(item)
+    working_receipt = {**receipt, "items": source_rows} if invalid_numbers else receipt
+    learned = apply_training_pairs(working_receipt, database_id=database_id)
     mapped = {row["source_index"]: row for row in learned["items"]}
     selections = selections or {}
     knowledge = json.loads(KNOWLEDGE_PATH.read_text(encoding="utf-8")) if KNOWLEDGE_PATH.exists() else {}
     items, warnings = [], []
-    source_rows = receipt.get("items", [])
+    for row_id, field, value in invalid_numbers:
+        warnings.append(f"Строка {row_id}: нечисловое поле {field} ({value!r}); "
+                        "для черновика принято 0, исправьте значение.")
     net = [Decimal(str(row.get("quantity") or 0)) * Decimal(str(row.get("price") or 0)) for row in source_rows]
     net_total = sum(net, Decimal(0))
     vat = Decimal(str(receipt.get("vat_amount") or 0))
