@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP, localcontext
 
 from App.ocr.receipt_math import verify_vat
+from App.ocr.receipt_rounding import validate_total_rounding
 from App.ocr.numeric_settings import load_numeric_settings
 
 PAYABLE = {"product", "service", "tax"}
@@ -115,12 +116,14 @@ def update_receipt(receipt):
         context.prec = 60
         computed = sum(totals.values())
     expected = parse_number(receipt["expected_total"])
-    if missing:
-        status = "incomplete"
-    elif expected is None:
-        status = "missing_original_total"
-    else:
-        status = "match" if computed == expected.quantize(CENT, rounding=ROUND_HALF_UP) else "mismatch"
+    # Evaluate exact result first, then only two mathematically verified
+    # whole-tenge rounding methods. No arbitrary <= 1 KZT tolerance.
+    rounding = validate_total_rounding(
+        [(row['row'], row['kind'], row['line_total'])
+         for row in receipt['rows'] if row['kind'] in PAYABLE and row.get('line_total') is not None],
+        expected, computed, missing=bool(missing),
+    )
+    status = rounding['status']
     settings = load_numeric_settings()
     receipt["vat_rate_percent"] = settings["vat_rate_percent"]
     receipt["vat_rate_source"] = settings["vat_rate_source"]
@@ -134,12 +137,21 @@ def update_receipt(receipt):
                 row["needs_review"] = True
                 row["review_reason"] = "; ".join(filter(None,[row["review_reason"],vat.get("reason", "Проверьте НДС")]))
     validation_status = status if status!="match" or vat["status"] in {"match","not_applicable"} else "vat_mismatch"
+    # The primary computed_total reflects an accepted printed rounding policy,
+    # while exact_computed_total preserves the independent cent-accurate sum.
+    accepted_total = (parse_number(rounding['accepted_total']) if status == 'match'
+                      else None)
+    display_total = accepted_total if accepted_total is not None else computed
     receipt["calculation"] = dict(status=status,validation_status=validation_status,vat=vat, products_subtotal=money(totals["product"]),
         services_subtotal=money(totals["service"]), tax_subtotal=money(totals["tax"]),
-        computed_total=money(computed), expected_total=money(expected) if expected is not None else None,
-        difference=money(computed-expected) if expected is not None and not missing else None,
+        computed_total=money(display_total), exact_computed_total=money(computed),
+        expected_total=money(expected) if expected is not None else None,
+        difference=money(display_total-expected) if expected is not None and not missing else None,
+        exact_difference=rounding['exact_difference'],
+        rounding_mode=rounding['mode'], rounding_adjustment=rounding['adjustment'],
+        rounding=rounding,
         missing_rows=missing, missing_original_total=expected is None,
-        rule="sum(quantity × price), including separate VAT rows")
+        rule="sum(quantity × price), including separate VAT rows; verified whole-tenge rounding only")
     receipt["product_count"] = sum(row["kind"] == "product" for row in receipt["rows"])
     receipt["review_count"] = sum(row["needs_review"] for row in receipt["rows"])
     receipt["can_finalize"] = receipt["review_count"] == 0 and validation_status == "match"
