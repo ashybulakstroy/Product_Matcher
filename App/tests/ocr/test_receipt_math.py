@@ -22,8 +22,32 @@ def test_equal_sum_cannot_hide_wrong_vat():
     assert result["calculation"]["status"]=="match"
     assert result["calculation"]["validation_status"]=="vat_mismatch"
     assert result["calculation"]["vat"]["difference"]=="-1.00"
+    assert result["calculation"]["vat"]["tolerance"]=="0.99"
+    assert result["calculation"]["vat"]["within_tolerance"] is False
     assert result["rows"][1]["needs_review"]
     assert not result["can_finalize"]
+
+
+def test_vat_difference_below_one_tenge_is_accepted():
+    result = update_receipt(document(base="100",vat="16.99",total="116.99"))
+    vat = result["calculation"]["vat"]
+    assert result["calculation"]["validation_status"]=="match"
+    assert vat["status"]=="match"
+    assert vat["difference"]=="0.99"
+    assert vat["tolerance"]=="0.99"
+    assert vat["within_tolerance"] is True
+    assert not result["rows"][1]["needs_review"]
+    assert result["can_finalize"]
+
+
+def test_negative_vat_difference_below_one_tenge_is_accepted():
+    result = update_receipt(document(base="100",vat="15.01",total="115.01"))
+    vat = result["calculation"]["vat"]
+    assert result["calculation"]["validation_status"]=="match"
+    assert vat["status"]=="match"
+    assert vat["difference"]=="-0.99"
+    assert vat["within_tolerance"] is True
+    assert not result["rows"][1]["needs_review"]
 
 
 def test_missing_quantity_prevents_vat_and_total_verification():
@@ -73,7 +97,10 @@ def test_vat_respects_integer_precision_printed_on_receipt():
     assert Decimal(result["calculation"]["vat"]["unrounded_tax"])==Decimal("5963.2")
 
 
-def test_explicit_cents_are_checked_with_cent_precision():
+def test_explicit_cents_are_checked_with_cent_precision_and_sub_tenge_tolerance():
     result=update_receipt(document(base="37270",vat="5963.00",total="43233.00",label="НДС 16 %"))
-    assert result["calculation"]["validation_status"]=="vat_mismatch"
+    assert result["calculation"]["validation_status"]=="match"
+    assert result["calculation"]["vat"]["status"]=="match"
+    assert result["calculation"]["vat"]["difference"]=="-0.20"
     assert result["calculation"]["vat"]["rounding_quantum"]=="0.01"
+    assert result["calculation"]["vat"]["within_tolerance"] is True

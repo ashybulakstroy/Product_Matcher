@@ -3,6 +3,9 @@ from decimal import Decimal, ROUND_HALF_UP, localcontext
 import re
 
 CENT = Decimal(".01")
+# A VAT difference below one tenge is a legal rounding deviation for this
+# receipt format.  0.99 is the largest representable value strictly below 1 ₸.
+VAT_TOLERANCE = Decimal("0.99")
 
 
 def amount(value):
@@ -45,8 +48,14 @@ def verify_vat(rows,taxable_base,actual_tax,parse_number,default_rate="16"):
         unrounded = taxable_base*rate/100
         expected = unrounded.quantize(quantum,rounding=ROUND_HALF_UP)
         difference = actual_tax-expected
-    result.update(status="match" if difference==0 else "mismatch",expected_tax=amount(expected),difference=amount(difference),
+    within_tolerance = abs(difference) <= VAT_TOLERANCE
+    result.update(status="match" if within_tolerance else "mismatch",expected_tax=amount(expected),difference=amount(difference),
+                  tolerance=amount(VAT_TOLERANCE),within_tolerance=within_tolerance,
                   unrounded_tax=format(unrounded,"f"),rounding_quantum=format(quantum,"f"))
     if difference:
-        result["reason"] = f"НДС по строкам {amount(actual_tax)}, ожидается {amount(expected)} при ставке {rate}%"
+        if within_tolerance:
+            result["reason"] = (f"НДС по строкам {amount(actual_tax)}, ожидается {amount(expected)} "
+                                f"при ставке {rate}%; разница {amount(difference)} ₸ в пределах допуска менее 1 ₸")
+        else:
+            result["reason"] = f"НДС по строкам {amount(actual_tax)}, ожидается {amount(expected)} при ставке {rate}%"
     return result
