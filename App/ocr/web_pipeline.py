@@ -35,7 +35,7 @@ from App.ocr.manual_mappings import ManualMappings
 from App.ocr.quantity_cells import recover_quantities
 from App.ocr.numeric_cell_split import recover as recover_numeric_cells
 from App.ocr.row_cell_split import repair as split_merged_product_rows
-from App.ocr.grid_first_rows import reconstruct_rows, preserve_source_columns
+from App.ocr.grid_first_rows import reconstruct_rows, preserve_source_columns, recover_printed_boundary
 from App.ocr.numeric_recovery import recover_numeric_receipt
 from App.ocr.selective_number_ocr import recover_number_cells
 from App.ocr.selective_text_recovery import recover_text_names
@@ -265,6 +265,11 @@ class ReceiptPipeline:
                 job.publish('message', title='Таблица найдена и проверена по заголовку и сетке', progress=22)
             elif verification['status'] == 'rejected':
                 boundary = dict(boundary, polygon=None)
+        boundary, grid_boundary_report = recover_printed_boundary(image, boundary, verification, recognize_table_header)
+        job.json_file('printed_grid_boundary.json', grid_boundary_report)
+        if grid_boundary_report['status'] == 'recovered':
+            verification = grid_boundary_report['verification']
+            selection['printed_grid_fallback'] = grid_boundary_report
         selection.update(final=verification, header_ocr_calls=header_ocr_calls,
                          existing_boundary_preserved=verification['status'] == 'uncertain')
         job.json_file('table_verification.json', selection)
@@ -428,6 +433,7 @@ class ReceiptPipeline:
             read_name=lambda crop: _grid_first_read_name(crop),
             read_numeric=lambda images: _grid_first_read_numbers(images),
             prefer_printed_bands=metadata.get('method') == 'source_grid_crop',
+            header_verified=verification.get('status') == 'confirmed',
         )
         job.json_file('grid_first_rows.json', grid_first_report)
         if grid_first_report['status'] == 'segmented_pending_numeric_check':

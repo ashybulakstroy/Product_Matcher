@@ -17,7 +17,51 @@ from typing import Any, Callable
 import cv2
 import numpy as np
 
-VERSION = "grid-first-rows-1.0"
+VERSION = "grid-first-rows-1.1"
+
+
+def recover_printed_boundary(image, previous, verification, recognize_header=None):
+    """Replace an unverified paper outline with an independently observed grid."""
+    report=dict(status='not_needed',ocr_calls=0)
+    if (verification.get('status')!='uncertain' or
+            verification.get('geometry',{}).get('four_columns') is not False or
+            verification.get('header',{}).get('roles') or previous.get('polygon') is None):
+        return previous,report
+    from App.ocr.receipt_roi_recovery import find_paper_roi
+    from App.ocr.full_grid_boundary import detect_full_grid_boundary
+    from App.ocr.table_verification import verify_table_candidate
+    points=np.asarray(previous['polygon'],dtype=float)
+    lo,hi=points.min(axis=0),points.max(axis=0)
+    if hi[1]-lo[1] < 1.6*(hi[0]-lo[0]):
+        return previous,report
+    box,paper=find_paper_roi(image)
+    report.update(status='not_recovered',paper=paper)
+    if box is None:return previous,report
+    x0,y0,x1,y1=box
+    crop=image[y0:y1,x0:x1]
+    if max(crop.shape[:2])*2>2400:return previous,dict(report,reason='paper_roi_too_large')
+    sample=cv2.resize(crop,None,fx=2.,fy=2.,interpolation=cv2.INTER_CUBIC)
+    polygon,evidence=detect_full_grid_boundary(sample)
+    report['grid_evidence']=evidence
+    if polygon is None:return previous,report
+    polygon=polygon/2+np.array([x0,y0],np.float32)
+    a,b=polygon.min(axis=0),polygon.max(axis=0)
+    if (b[1]-a[1] >= .8*(hi[1]-lo[1]) or b[0]-a[0] < .65*(hi[0]-lo[0]) or
+            np.any(a<lo-8) or np.any(b>hi+8)):
+        return previous,dict(report,reason='not_an_inner_printed_grid')
+    candidate=dict(polygon=polygon,status='detected',warnings=['paper_outline_replaced_by_observed_grid'])
+    checked=verify_table_candidate(image,candidate,None)
+    if checked.get('geometry',{}).get('four_columns'):
+        candidate['selected']=dict(support=[evidence['rule_count'],5],source='paper_roi_observed_grid')
+        checked=verify_table_candidate(image,candidate,None)
+    if (checked.get('status') == 'uncertain' and checked.get('geometry',{}).get('four_columns')
+            and recognize_header is not None):
+        checked=verify_table_candidate(image,candidate,recognize_header)
+        report['ocr_calls']=1
+    report['verification']=checked
+    if checked.get('status')!='confirmed':return previous,report
+    report.update(status='recovered',reason='paper_outline_contains_confirmed_printed_grid')
+    return candidate,report
 
 
 def preserve_source_columns(image, polygon, rectified, map_x, map_y, metadata):
@@ -72,7 +116,6 @@ def preserve_source_columns(image, polygon, rectified, map_x, map_y, metadata):
                  body_size=[bw,bh],warnings=[],source_polygon=points.tolist())
     report=dict(status='applied',reason='source_five_columns_lost_by_contour',before=before,after=after)
     return (sampled,mx,my,revised),report
-
 
 def _kind(text):
     key = re.sub(r'\s+', '', str(text or '').casefold())
@@ -281,23 +324,6 @@ def _numeric_views(crop):
     return [cv2.cvtColor(z, cv2.COLOR_GRAY2BGR) for z in (enlarged, equal)]
 
 
-def _read_numeric(crop, callback):
-    if callback is None:
-        return None, []
-    views = _numeric_views(crop)
-    readings = []
-    for view in views:
-        values = callback([view])
-        if len(values) != 1:
-            return None, []
-        text, confidence = values[0]
-        readings.append((str(text), float(confidence)))
-    valid = [_number(v[0]) for v in readings]
-    if len(valid) == 2 and valid[0] is not None and valid[0] == valid[1] and min(v[1] for v in readings) >= .35:
-        return valid[0], readings
-    return None, readings
-
-
 def _evidence_rows(aligned, boundaries, layout):
     """Assign whole OCR blocks by overlap, never split a text string by guessing."""
     slots = [[] for _ in range(len(boundaries)-1)]
@@ -329,84 +355,221 @@ def _evidence_rows(aligned, boundaries, layout):
     return slots,crossing
 
 
-def reconstruct_rows(image, layout, aligned, initial_rows, *, read_name=None, read_numeric=None,
-                     max_name_crops=6, max_numeric_crops=44, prefer_printed_bands=False):
-    """Return (rows, report). Fallback is gated by extra *visible* price lines.
 
-    Does not require sum matching to preserve physical row boundaries. `*_raw`
-    always represents first-pass OCR; independent cell readings are in the
-    corresponding `name_recovered`, `quantity`, and `price` fields.
+
+def find_printed_grid_bands(image: np.ndarray, layout: dict, aligned_lines=(), *, header_verified=False):
+    """Detect independent horizontal rules in number AND price columns.
+
+    A short, sharply printed grid is much stronger evidence than OCR price
+    strings. Only use it when the header is actually seen in original OCR
+    blocks; never assume that the first band is a heading without evidence.
     """
-    before = copy.deepcopy(initial_rows)
-    report = dict(version=VERSION,status="not_needed",initial_rows=len(before),
-                  price_anchors=[],bounds=[],name_calls=0,numeric_calls=0,
-                  ambiguous_blocks=[],recovered_cells=[],warnings=[])
-    anchors, detected = find_price_anchors(image,layout,aligned)
-    report['price_detector'] = detected
-    report['price_anchors'] = [round(x,1) for x in anchors]
-    initial_count=sum(r.get('kind') in ('product','service','tax') for r in before)
-    equal_count_refinement=prefer_printed_bands and len(anchors)==initial_count
-    if len(anchors) < 3 or (len(anchors) <= initial_count and not equal_count_refinement):
-        return before,report
-    # Do not replace many rows based on random noise. At least three separated
-    # price lines plus near-continuous printed vertical column evidence required.
-    if len(anchors) > 120:
-        report['status']='rejected_too_many_anchors';return before,report
-    boundaries, band_report=price_bands(image,layout,anchors)
-    report['band_detection']=band_report
-    if not boundaries:
-        report['status']='rejected_no_valid_bands';return before,report
-    if equal_count_refinement and band_report['horizontal_rule_supported'] < max(2,int(np.ceil((len(anchors)-1)*.8))):
-        report['status']='not_needed';return before,report
-    # Require some independently seen horizontal separators for long grids.
-    if len(anchors) >= 6 and band_report['horizontal_rule_supported'] < 2:
-        report['status']='rejected_insufficient_grid_support';return before,report
-    slots,crossings=_evidence_rows(aligned,boundaries,layout)
+    try:
+        left = float(layout.get('body_left', 0))
+        n_end = float(layout['name_left'])
+        p_start, p_end = float(layout['quantity_right']), float(layout['right'])
+        body_top, body_bottom = float(layout['body_top']), float(layout['body_bottom'])
+    except (KeyError, ValueError, TypeError):
+        return [], dict(status='invalid_layout')
+    h, w = image.shape[:2]
+    if h < 100 or n_end-left < 16 or p_end-p_start < 22:
+        return [], dict(status='too_small')
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY) if image.ndim == 3 else image
+    # Keep narrow spans away from vertical table dividers.
+    spans = [(int(left+max(3,(n_end-left)*.09)), int(n_end-max(3,(n_end-left)*.09))),
+             (int(p_start+max(4,(p_end-p_start)*.09)), int(p_end-max(4,(p_end-p_start)*.09)))]
+    scores=[]
+    for x0,x1 in spans:
+        x0=max(0,min(w,x0));x1=max(0,min(w,x1))
+        if x1-x0 < 10:
+            return [], dict(status='invalid_column_width')
+        roi=gray[:,x0:x1]
+        block=min(31, max(15, ((min(roi.shape)//3)*2+1)))
+        inverse=cv2.adaptiveThreshold(roi,255,cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                      cv2.THRESH_BINARY_INV,block,5)
+        horizontal=cv2.morphologyEx(inverse,cv2.MORPH_CLOSE,np.ones((1,max(5,(x1-x0)//14)),np.uint8))
+        horizontal=cv2.morphologyEx(horizontal,cv2.MORPH_OPEN,
+                                   np.ones((1,max(12,int((x1-x0)*.27))),np.uint8))
+        scores.append(np.count_nonzero(horizontal,axis=1)/float(x1-x0))
+    support=(scores[0] >= .72)&(scores[1] >= .72)
+    mask=np.flatnonzero(support & (np.arange(h) >= max(0,body_top-4))
+                       & (np.arange(h) <= min(h-1,body_bottom+4)))
+    clusters=[]
+    for y in mask:
+        if not clusters or y-clusters[-1][-1] > max(7,round(h*.008)):
+            clusters.append([int(y)])
+        else: clusters[-1].append(int(y))
+    rules=[float(np.median(c)) for c in clusters]
+    rules=[v for v in rules if body_top-4 <= v <= body_bottom+4]
+    report=dict(status='insufficient_printed_rules', rules=[round(v,2) for v in rules],
+                strip_ranges=spans, supports='number_and_price')
+    if not 5 <= len(rules) <= 60:
+        return [], report
+    # Find header words strictly in original OCR geometry. If the heading is
+    # unreadable, leave this strategy off and try the old price-anchor fallback.
+    header_words=('тауар', 'саны', 'багас', 'бағас', 'цена', 'наимен', 'кол-во')
+    header_ys=[]
+    for line in aligned_lines:
+        center=_center(line)
+        if center is not None and any(word in str(line.get('text','')).casefold() for word in header_words):
+            header_ys.append(float(center[1]))
+    if not header_ys and not header_verified:
+        report['status']='no_header_evidence';return [],report
+    # A header may be broken across OCR blocks. Identify a physical interval
+    # with the heading text, then start after the separator beneath it.
+    header_idx=None
+    for idx,(a,b) in enumerate(zip(rules,rules[1:])):
+        if any(a+3 <= y <= b-3 for y in header_ys) and idx <= 2:
+            header_idx=idx;break
+    if header_idx is None and header_verified:
+        # Upstream App/ocr/table_verification has independently confirmed the
+        # first printed header; no additional OCR call is necessary.
+        if rules[0] <= body_top + max(10.,(body_bottom-body_top)*.06):
+            header_idx=0
+    if header_idx is None:
+        report['status']='header_outside_grid';return [],report
+    bounds=rules[header_idx+1:]
+    if not 4 <= len(bounds)-1 <= 50:
+        report['status']='too_few_product_bands';return [],report
+    if any(b-a < 12 for a,b in zip(bounds,bounds[1:])):
+        report['status']='narrow_band';return [],report
+    # Reject very wide gaps which imply a missing printed separator.
+    gaps=np.diff(bounds)
+    if gaps.size>=4 and max(gaps) > max(200.,float(np.median(gaps))*3.1):
+        report['status']='missing_printed_separator';return [],report
+    report.update(status='ok',header_band=[rules[header_idx],rules[header_idx+1]],
+                  row_bands=len(bounds)-1,all_rules=len(rules))
+    return bounds,report
+
+
+def _batch_numeric_read(tasks,callback,report):
+    """One batched OCR recognizer call for missing numeric cell views."""
+    images=[]
+    for task in tasks:
+        views=_numeric_views(task['crop'])
+        if len(views)==2:
+            task['offset']=len(images)
+            images.extend(views)
+    if not images or callback is None:return
+    report['numeric_calls'] += 1
+    report['numeric_images'] += len(images)
+    try:
+        readings=callback(images)
+    except Exception as error:
+        report['warnings'].append('numeric_batch_failed:'+type(error).__name__)
+        return
+    if len(readings)!=len(images):
+        report['warnings'].append('numeric_batch_output_count_mismatch')
+        return
+    for task in tasks:
+        if 'offset' not in task:continue
+        start=task['offset']
+        pair=[]
+        for result in readings[start:start+2]:
+            try:
+                text,confidence=result
+                pair.append((str(text),float(confidence)))
+            except (TypeError,ValueError):
+                pair=[];break
+        valid=[_number(item[0]) for item in pair]
+        if len(valid)==2 and valid[0] is not None and valid[0]==valid[1] and min(x[1] for x in pair)>=.35:
+            row=task['row'];field=task['field']
+            row[field]=valid[0]
+            row[field+'_source']='grid_first_cell_ocr'
+            row[field+'_ocr']={'readings':pair,'bounds':task['bounds']}
+            report['recovered_cells'].append(dict(row=row['row'],field=field,text=valid[0],source='cell_ocr'))
+        else:
+            report['uncertain_cells'].append(dict(row=task['row']['row'],field=task['field'],readings=pair))
+
+
+def reconstruct_rows(image, layout, aligned, initial_rows, *, read_name=None, read_numeric=None,
+                     max_name_crops=12, max_numeric_crops=44, header_verified=False, prefer_printed_bands=False):
+    """Recover physical rows only on independent geometric evidence.
+
+    Printed grid first (short receipts), price glyphs second (long receipts).
+    No expected total, VAT amount, or expected row count is consulted.
+    """
+    before=copy.deepcopy(initial_rows)
+    report=dict(version=VERSION,status='not_needed',initial_rows=len(before),
+                strategy=None,price_anchors=[],bounds=[],name_calls=0,numeric_calls=0,
+                numeric_images=0,ambiguous_blocks=[],recovered_cells=[],uncertain_cells=[],warnings=[])
+    payable=sum(r.get('kind') in ('product','service','tax') for r in before)
+    bounds,grid=find_printed_grid_bands(image,layout,aligned,header_verified=header_verified)
+    report['printed_grid_detector']=grid
+    if bounds and len(bounds)-1 > payable:
+        strategy='printed_grid'
+        report['strategy']=strategy
+        report['price_detector']={'status':'not_needed'}
+    else:
+        anchors,det=find_price_anchors(image,layout,aligned)
+        report['price_detector']=det
+        report['price_anchors']=[round(x,1) for x in anchors]
+        equal_count_refinement=prefer_printed_bands and len(anchors)==payable
+        if len(anchors)<3 or (len(anchors)<=payable and not equal_count_refinement) or len(anchors)>120:
+            return before,report
+        bounds,band_report=price_bands(image,layout,anchors)
+        report['band_detection']=band_report
+        if not bounds:
+            report['status']='rejected_no_valid_bands';return before,report
+        if len(anchors)>=6 and band_report['horizontal_rule_supported']<2:
+            report['status']='rejected_insufficient_grid_support';return before,report
+        if equal_count_refinement and band_report['horizontal_rule_supported'] < max(2,int(np.ceil((len(anchors)-1)*.8))):
+            report['status']='not_needed';return before,report
+        strategy='price_anchors'
+        report['strategy']=strategy
+    slots,crossings=_evidence_rows(aligned,bounds,layout)
     rows=[]
-    for k,(lo,hi) in enumerate(zip(boundaries,boundaries[1:])):
-        members=sorted(slots[k], key=lambda l:(float(_center(l)[1]),float(_center(l)[0])))
+    for k,(lo,hi) in enumerate(zip(bounds,bounds[1:])):
+        members=sorted(slots[k],key=lambda l:(float(_center(l)[1]),float(_center(l)[0])))
         columns={key:[] for key in ('name','quantity','price','number')}
         for line in members:
             cx=float(_center(line)[0]);value=str(line['text'])
-            if cx < layout['name_left']-2: columns['number'].append(value)
-            elif cx < layout['name_right']: columns['name'].append(value)
-            elif cx < layout['quantity_right']: columns['quantity'].append(value)
-            elif cx < layout['right']+4: columns['price'].append(value)
-        def raw(field): return ' '.join(columns[field]).strip()
-        entry=dict(row=k+1,source_row=k+1,y_range=[round(lo,2),round(hi,2)],
-                   item_number_raw=raw('number'),name_raw=raw('name'),
-                   quantity_raw=raw('quantity'),price_raw=raw('price'),
-                   kind=_kind(raw('name')),ocr_confidence=float(np.mean([float(l.get('confidence',0)) for l in members if float(_center(l)[0]) >= layout['name_left'] and float(_center(l)[0]) < layout['name_right']])) if columns['name'] else 0.,
-                   raw_lines=[{name:copy.deepcopy(l.get(name)) for name in ('text','confidence','box','box_original')}
-                              for l in members],grid_first_source='printed_price_anchors')
-        if crossings[k]:
-            report['ambiguous_blocks'].append(dict(row=k+1,values=crossings[k]))
-        rows.append(entry)
-    report['bounds']=[round(y,2) for y in boundaries]
+            if cx<layout['name_left']-2:columns['number'].append(value)
+            elif cx<layout['name_right']:columns['name'].append(value)
+            elif cx<layout['quantity_right']:columns['quantity'].append(value)
+            elif cx<layout['right']+4:columns['price'].append(value)
+        def raw(field):return ' '.join(columns[field]).strip()
+        name_confidence=[float(l.get('confidence',0)) for l in members
+                         if layout['name_left']<=float(_center(l)[0])<layout['name_right']]
+        row=dict(row=k+1,source_row=k+1,y_range=[round(lo,2),round(hi,2)],
+                 item_number_raw=raw('number'),name_raw=raw('name'),
+                 quantity_raw=raw('quantity'),price_raw=raw('price'),
+                 kind=_kind(raw('name')),ocr_confidence=float(np.mean(name_confidence)) if name_confidence else 0.,
+                 raw_lines=[{name:copy.deepcopy(l.get(name)) for name in ('text','confidence','box','box_original')}
+                            for l in members],grid_first_source=strategy)
+        if crossings[k]:report['ambiguous_blocks'].append(dict(row=k+1,values=crossings[k]))
+        rows.append(row)
+    report['bounds']=[round(y,2) for y in bounds]
     report['status']='segmented_pending_numeric_check'
-    # Read only missing/ambiguous physical cells; the original OCR may have a
-    # giant name block spanning several rows, so never copy it into every row.
-    for row in rows:
-        a,b=row['y_range']; top=max(0,int(a+3)); bottom=min(image.shape[0],int(b-3))
+    pending=[]
+    for i,row in enumerate(rows):
+        a,b=row['y_range'];top=max(0,int(a+3));bottom=min(image.shape[0],int(b-3))
         if bottom-top<10:continue
-        cx0=int(layout['name_left'])+3;cx1=int(layout['name_right'])-3
-        needs_name=(not row['name_raw'].strip() or bool(crossings[row['row']-1]))
-        if needs_name and read_name and report['name_calls']<max_name_crops and cx1-cx0>=15:
-            crop=image[top:bottom,cx0:cx1]
-            text,_=_read_name(crop,read_name);report['name_calls']+=1
+        name_left,name_right=int(layout['name_left'])+3,int(layout['name_right'])-3
+        needs_name=(not row['name_raw'].strip() or bool(crossings[i]))
+        if needs_name and read_name and report['name_calls']<max_name_crops and name_right-name_left>=15:
+            crop=image[top:bottom,name_left:name_right]
+            try:
+                text,_=_read_name(crop,read_name)
+                report['name_calls']+=1
+            except Exception as error:
+                text=''
+                report['warnings'].append('name_read_failed:'+type(error).__name__)
             if text:
                 row['name_recovered']=text;row['name_recovery_source']='grid_first_cell_ocr'
+                if _kind(text)=='tax':row['kind']='tax'
+                elif _kind(text)=='service':row['kind']='service'
                 report['recovered_cells'].append(dict(row=row['row'],field='name',text=text,source='cell_ocr'))
-        for fld,low,high in [('quantity',layout['name_right'],layout['quantity_right']),
-                             ('price',layout['quantity_right'],layout['right'])]:
-            if _number(row[fld+'_raw']) is not None:continue
-            if read_numeric is None or report['numeric_calls']+2>max_numeric_crops:continue
-            x0=int(low)+4;x1=int(high)-4
+        for field,left,right in [('quantity',layout['name_right'],layout['quantity_right']),
+                                 ('price',layout['quantity_right'],layout['right'])]:
+            if _number(row[field+'_raw']) is not None:continue
+            if read_numeric is None or 2*(len(pending)+1)>max_numeric_crops:continue
+            x0=max(0,int(left)+4);x1=min(image.shape[1],int(right)-4)
             if x1-x0<12:continue
-            value,readings=_read_numeric(image[top:bottom,x0:x1],read_numeric)
-            report['numeric_calls']+=2
-            if value is not None:
-                row[fld]=value;row[fld+'_source']='grid_first_cell_ocr'
-                row[fld+'_ocr']={'readings':readings,'bounds':[x0,top,x1,bottom]}
-                report['recovered_cells'].append(dict(row=row['row'],field=fld,text=value,source='cell_ocr'))
-    return rows, report
+            pending.append(dict(row=row,field=field,bounds=[x0,top,x1,bottom],
+                                crop=image[top:bottom,x0:x1].copy()))
+    _batch_numeric_read(pending,read_numeric,report)
+    report['unresolved_numeric']=[dict(row=r['row'],field=f)
+        for r in rows for f in ('quantity','price')
+        if _number(r.get(f,r[f+'_raw'])) is None]
+    return rows,report

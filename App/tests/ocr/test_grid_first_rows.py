@@ -51,10 +51,11 @@ def test_crossing_block_not_copied_to_multiple_rows(monkeypatch):
 
 def test_cell_ocr_limits_and_preservation_of_numeric_raw(monkeypatch):
     setup_bands(monkeypatch)
-    def read(_):return [('4',.99)]
+    def read(images):return [('4',.99) for _ in images]
     rows,report=grid.reconstruct_rows(np.full((500,300,3),250,np.uint8),LAYOUT,[],[dict(kind='product')],
                                      read_numeric=read,max_numeric_crops=2)
-    assert report['numeric_calls']==2
+    assert report['numeric_calls']==1
+    assert report['numeric_images']==2
     assert rows[0]['quantity_raw']==''
     assert rows[0]['quantity']=='4'
     assert 'price' not in rows[0]
@@ -65,7 +66,7 @@ def test_numeric_disagreement_does_not_change_quantity(monkeypatch):
     setup_bands(monkeypatch)
     values=iter([('4',.99),('7',.99)])
     rows,report=grid.reconstruct_rows(np.full((500,300,3),250,np.uint8),LAYOUT,[],[dict(kind='product')],
-                                     read_numeric=lambda _:[next(values)],max_numeric_crops=2)
+                                     read_numeric=lambda images:[next(values) for _ in images],max_numeric_crops=2)
     assert all('quantity' not in r for r in rows)
 
 
@@ -92,3 +93,24 @@ def test_complete_contour_grid_is_not_changed(monkeypatch):
 @pytest.mark.parametrize('value',['1 10 4','4 2','NaN','-1'])
 def test_ambiguous_numeric_strings_rejected(value):
     assert grid._number(value) is None
+
+
+@pytest.mark.parametrize('verification',[
+    dict(status='confirmed'),
+    dict(status='uncertain',geometry=dict(four_columns=True)),
+    dict(status='uncertain',geometry=dict(four_columns=False),header=dict(roles=['price'])),
+])
+def test_paper_outline_fallback_preserves_existing_verified_evidence(verification):
+    previous=dict(polygon=np.array([[0,0],[100,0],[100,300],[0,300]],np.float32))
+    actual,report=grid.recover_printed_boundary(None,previous,verification)
+    assert actual is previous
+    assert report['ocr_calls']==0
+
+
+def test_failed_numeric_batch_does_not_insert_any_value(monkeypatch):
+    setup_bands(monkeypatch)
+    rows,report=grid.reconstruct_rows(np.full((500,300,3),250,np.uint8),LAYOUT,[],[dict(kind='product')],
+                                     read_numeric=lambda images:[],max_numeric_crops=2)
+    assert report['numeric_calls']==1 and report['numeric_images']==2
+    assert report['warnings']==['numeric_batch_output_count_mismatch']
+    assert all('quantity' not in row and 'price' not in row for row in rows)
