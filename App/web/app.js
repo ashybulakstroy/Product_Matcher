@@ -109,6 +109,19 @@ function drawAsset(asset){
   syncTotalHighlight(asset);
 }
 function openImage(key){const asset=state.assets.get(key);if(!asset)return;$('dialog-title').textContent=asset.title;$('dialog-image').replaceChildren(asset.stage.cloneNode(true));$('image-dialog').showModal();}
+function focusRecognitionImage(asset){
+  if(asset.key!=='rectified'||!state.blob||state.result||
+      focusRecognitionImage.token===state.token||!asset.img.complete||!asset.img.naturalWidth)return;
+  const token=state.token;
+  cancelAnimationFrame(focusRecognitionImage.frame);
+  focusRecognitionImage.frame=requestAnimationFrame(()=>{
+    if(token!==state.token||state.result||state.assets.get('rectified')!==asset)return;
+    const panel=$('input-scroll');
+    panel.scrollTo({top:panel.scrollTop+asset.card.getBoundingClientRect().top-panel.getBoundingClientRect().top-12,behavior:'instant'});
+    asset.card.tabIndex=-1;asset.card.focus({preventScroll:true});
+    focusRecognitionImage.token=token;
+  });
+}
 function followProcessing(){
   if(VisualSync.active){VisualSync.schedule();return;}
   cancelAnimationFrame(followProcessing.frame);
@@ -263,7 +276,8 @@ function addArtifact(data){
   const card=node('article','image-card'+(['header','crop'].includes(data.key)?' debug-only':''));card.dataset.key=data.key;
   const header=node('div','image-card-header');const headings=node('div');const heading=node('h3','',data.title);const subtitle=node('p','',data.subtitle||'');headings.append(heading,subtitle);
   header.append(headings,node('span','operation-tag',data.role==='original'?'SOURCE':data.key.toUpperCase()));
-  const stage=node('div','image-stage');const img=document.createElement('img');img.addEventListener('load',followProcessing);img.src=data.url;img.alt=data.title;img.loading='eager';
+  const stage=node('div','image-stage');const img=document.createElement('img');const artifactToken=state.token;
+  img.addEventListener('load',()=>{followProcessing();const current=state.assets.get(data.key);if(artifactToken===state.token&&current?.img===img)focusRecognitionImage(current);});img.src=data.url;img.alt=data.title;img.loading='eager';
   const overlay=document.createElementNS(SVG_NS,'svg');overlay.setAttribute('aria-hidden','true');stage.append(img,overlay);
   stage.addEventListener('click',()=>openImage(data.key));
   const tools=node('div','image-tools');const dimensions=node('span','',`${data.width} × ${data.height} px`);const expand=node('button','','Рассмотреть');expand.type='button';expand.append(icon('expand'));expand.addEventListener('click',()=>openImage(data.key));tools.append(dimensions,expand);
@@ -271,6 +285,7 @@ function addArtifact(data){
   const order=['original','header','crop','rectified'];
   [...$('image-list').children].sort((a,b)=>order.indexOf(a.dataset.key)-order.indexOf(b.dataset.key)).forEach(item=>$('image-list').append(item));
   asset={...data,card,heading,subtitle,stage,img,overlay,dimensions};state.assets.set(data.key,asset);drawAsset(asset);window.ReceiptUploadGate?.asset(data.key);
+  focusRecognitionImage(asset);
   followProcessing();
 }
 function focusRow(rowId, persist=false){

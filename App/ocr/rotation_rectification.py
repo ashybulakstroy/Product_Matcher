@@ -13,7 +13,7 @@ def rotation_angle(polygon):
     angles = [np.degrees(np.arctan2(*(tr - tl)[::-1])),
               np.degrees(np.arctan2(*(br - bl)[::-1]))]
     angle = float(np.median(angles))
-    if not 2. <= abs(angle) <= 12.:
+    if not 0. <= abs(angle) <= 12.:
         raise ValueError(f"Наклон {angle:.2f}° вне безопасного диапазона")
     return angle
 
