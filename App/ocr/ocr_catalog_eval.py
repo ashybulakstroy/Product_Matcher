@@ -1381,7 +1381,15 @@ def choose_row_boundaries(lines, layout):
 
         candidate = bottom+4
 
-        if all(abs(candidate-existing) > 10 for existing in boundaries):
+        # The bottom of a header word is not a printed row separator. Keep
+        # the observed rule below the full header when no goods precede it.
+        from App.ocr.table_headers import without_table_headers
+        content = without_table_headers(lines, layout)
+        following_rule = next((value for value in sorted(boundaries) if value > bottom), None)
+        has_content_before_rule = (following_rule is None or any(
+            bottom < float(line['center'][1]) < following_rule for line in content))
+
+        if has_content_before_rule and all(abs(candidate-existing) > 10 for existing in boundaries):
 
             boundaries.append(candidate)
 

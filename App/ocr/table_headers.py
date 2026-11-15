@@ -37,9 +37,30 @@ def without_table_headers(lines, layout):
         # Require evidence from two different columns, rather than a product name.
         if len({label for _, label in cohort}) < 2:
             continue
-        header_bottoms.append(max(
+        bottom = max(
             max((float(point[1]) for point in line.get('eval_box', line.get('box', []))),
-                default=float(line['center'][1])) for line, _ in cohort))
+                default=float(line['center'][1])) for line, _ in cohort)
+        top = min(min((float(point[1]) for point in line.get('eval_box', line.get('box', []))),
+                      default=float(line['center'][1])) for line, _ in cohort)
+        header_limit = bottom + max(6., (bottom-top)*.8)
+        header_start = top - max(6., (bottom-top)*.8)
+        # A confirmed name/price pair can surround a two-line quantity label.
+        # RapidOCR may read it as "Кon" + "-BO" in separate boxes. Extend only
+        # within that column and adjacent header band; never consume digits.
+        for line in lines:
+            x = float(line['center'][0])
+            key = re.sub(r'[^a-zа-я]', '', unicodedata.normalize('NFKC', line['text']).casefold())
+            if not (layout['name_right'] <= x < layout['quantity_right'] and
+                    not re.search(r'\d',line['text']) and
+                    key in {'кол', 'коn', 'кon', 'kon', 'коп', 'во', 'bo', 'вo', 'bо'}):
+                continue
+            ys = [float(point[1]) for point in line.get('eval_box', line.get('box', []))]
+            if not ys:
+                continue
+            if min(ys) >= header_start and max(ys) <= header_limit:
+                ignored.add(id(line))
+                bottom = max(bottom, max(ys))
+        header_bottoms.append(bottom)
         for line in lines:
             if aligned(anchor, line) and (role(line) or not re.search(r"\d", line["text"])):
                 ignored.add(id(line))

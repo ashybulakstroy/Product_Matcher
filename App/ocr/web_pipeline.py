@@ -450,6 +450,8 @@ class ReceiptPipeline:
             header_verified=verification.get('status') == 'confirmed',
         )
         job.json_file('grid_first_rows.json', grid_first_report)
+        if grid_first_report.get('strategy') == 'printed_grid':
+            segmentation = 'verified_printed_grid_refinement'
         if grid_first_report['status'] == 'segmented_pending_numeric_check':
             job.publish('message', title=f"Товарные строки восстановлены по сетке: {len(rows)}; проверяем цифры", progress=75)
         total_candidates = [line for line in aligned if line["center"][1] >= layout["body_bottom"]-5

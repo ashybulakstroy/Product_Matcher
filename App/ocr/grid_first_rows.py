@@ -355,6 +355,33 @@ def _evidence_rows(aligned, boundaries, layout):
     return slots,crossing
 
 
+def _wrapped_numeric(lines, left, right):
+    """Read a two-line number that physically wraps at the column's right edge.
+
+    Join observed characters only, never amounts inferred from receipt math.
+    Ordinary separated numbers and unrelated OCR fragments are not eligible.
+    """
+    if len(lines) != 2:
+        return None
+    ordered=sorted(lines,key=lambda l:float(_center(l)[1]))
+    boxes=[_box(line) for line in ordered]
+    if any(box is None for box in boxes):
+        return None
+    first,last=[str(line['text']).strip() for line in ordered]
+    if not re.fullmatch(r'\d[\d .,]*',first) or not re.fullmatch(r'\d{1,2}',last):
+        return None
+    a,b=boxes
+    gap=float(b[:,1].min()-a[:,1].max())
+    height=float(np.median([np.ptp(box[:,1]) for box in boxes]))
+    if (not -2 <= gap <= height*.7 or
+            abs(float(a[:,0].max()-b[:,0].max())) > 3 or
+            right-float(a[:,0].max()) > 5 or
+            float(np.ptp(a[:,0])) < (right-left)*.65):
+        return None
+    combined=first+last
+    return combined if _number(combined) is not None else None
+
+
 
 
 def find_printed_grid_bands(image: np.ndarray, layout: dict, aligned_lines=(), *, header_verified=False):
@@ -496,7 +523,15 @@ def reconstruct_rows(image, layout, aligned, initial_rows, *, read_name=None, re
     payable=sum(r.get('kind') in ('product','service','tax') for r in before)
     bounds,grid=find_printed_grid_bands(image,layout,aligned,header_verified=header_verified)
     report['printed_grid_detector']=grid
-    if bounds and len(bounds)-1 > payable:
+    payable_rows=[r for r in before if r.get('kind') in ('product','service','tax')]
+    equal_printed_count = bool(bounds) and len(bounds)-1 == payable
+    needs_printed_refinement = equal_printed_count and (
+        any(_number(r.get(f, r.get(f+'_raw'))) is None
+            for r in payable_rows for f in ('quantity','price')) or
+        any(len(r.get('y_range', [])) != 2 or
+            max(abs(float(a)-float(b)) for a,b in zip(r['y_range'], band)) > 3
+            for r,band in zip(payable_rows,zip(bounds,bounds[1:]))))
+    if bounds and (len(bounds)-1 > payable or needs_printed_refinement):
         strategy='printed_grid'
         report['strategy']=strategy
         report['price_detector']={'status':'not_needed'}
@@ -538,9 +573,23 @@ def reconstruct_rows(image, layout, aligned, initial_rows, *, read_name=None, re
                  raw_lines=[{name:copy.deepcopy(l.get(name)) for name in ('text','confidence','box','box_original')}
                             for l in members],grid_first_source=strategy)
         if crossings[k]:report['ambiguous_blocks'].append(dict(row=k+1,values=crossings[k]))
+        for field,left,right in [('quantity',layout['name_right'],layout['quantity_right']),
+                                 ('price',layout['quantity_right'],layout['right'])]:
+            if _number(row[field+'_raw']) is not None:
+                continue
+            blocks=[line for line in members if left <= float(_center(line)[0]) < right+1]
+            wrapped=_wrapped_numeric(blocks,left,right)
+            if wrapped is not None:
+                row[field]=wrapped
+                report['recovered_cells'].append(dict(row=row['row'],field=field,text=wrapped,
+                    source='wrapped_ocr_blocks', evidence=[dict(text=l['text'],box=_box(l).tolist()) for l in blocks]))
         rows.append(row)
     report['bounds']=[round(y,2) for y in bounds]
     report['status']='segmented_pending_numeric_check'
+    if strategy == 'printed_grid':
+        # The interface and later cell crops must use the same observed grid
+        # as reconstruction, including its independently verified header band.
+        layout['row_boundaries']=[float(grid['header_band'][0]), *bounds]
     pending=[]
     for i,row in enumerate(rows):
         a,b=row['y_range'];top=max(0,int(a+3));bottom=min(image.shape[0],int(b-3))
@@ -562,7 +611,7 @@ def reconstruct_rows(image, layout, aligned, initial_rows, *, read_name=None, re
                 report['recovered_cells'].append(dict(row=row['row'],field='name',text=text,source='cell_ocr'))
         for field,left,right in [('quantity',layout['name_right'],layout['quantity_right']),
                                  ('price',layout['quantity_right'],layout['right'])]:
-            if _number(row[field+'_raw']) is not None:continue
+            if _number(row.get(field,row[field+'_raw'])) is not None:continue
             if read_numeric is None or 2*(len(pending)+1)>max_numeric_crops:continue
             x0=max(0,int(left)+4);x1=min(image.shape[1],int(right)-4)
             if x1-x0<12:continue
