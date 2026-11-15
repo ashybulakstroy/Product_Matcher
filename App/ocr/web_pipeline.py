@@ -36,6 +36,7 @@ from App.ocr.quantity_cells import recover_quantities
 from App.ocr.numeric_cell_split import recover as recover_numeric_cells
 from App.ocr.row_cell_split import repair as split_merged_product_rows
 from App.ocr.grid_first_rows import reconstruct_rows, preserve_source_columns, recover_printed_boundary
+from App.ocr.printed_grid_adapter import maybe_use_printed_grid
 from App.ocr.numeric_recovery import recover_numeric_receipt
 from App.ocr.selective_number_ocr import recover_number_cells
 from App.ocr.selective_text_recovery import recover_text_names
@@ -332,9 +333,13 @@ class ReceiptPipeline:
         (rectified, map_x, map_y, metadata), source_grid_report = preserve_source_columns(
             image, polygon, rectified, map_x, map_y, metadata)
         job.json_file('source_grid_columns.json', source_grid_report)
+        (rectified, map_x, map_y, metadata), printed_grid_report = maybe_use_printed_grid(
+            image, (rectified, map_x, map_y, metadata), output_dir=job.directory)
+        job.json_file('printed_grid_rectification.json', printed_grid_report)
         warnings.extend(metadata["warnings"])
         subtitle = {"wave_grid":"Выпрямлены волны по внутренней сетке; ячейка итога сохранена",
                     "grid_curvature_v2":"Выпрямлены изогнутые строки по V2-сетке; ячейка итога сохранена",
+                    "printed_grid_rectified":"Таблица выпрямлена по пяти печатным вертикалям и разделителям строк",
                     "original_crop_fallback":"Сохранена исходная геометрия: требуется проверка"}.get(metadata["method"],"Выпрямлены границы; нижняя ячейка итога сохранена")
         job.publish("message",title=subtitle,progress=37)
         emit_status(job, "geometry", "Выпрямляем таблицу", details=subtitle)
@@ -344,6 +349,12 @@ class ReceiptPipeline:
         job.json_file("rectification.json", metadata)
         job.phase("layout", 40, "Находим строки и столбцы")
         layout = table_layout(rectified, metadata)
+        if metadata.get('method') == 'printed_grid_rectified':
+            from App.ocr.printed_grid_rectification import refine_printed_row_boundaries
+            physical_columns = metadata['printed_grid_columns']
+            layout.update(body_left=physical_columns[0], name_left=physical_columns[1],
+                          name_right=physical_columns[2], quantity_right=physical_columns[3],
+                          right=physical_columns[4])
         layout.setdefault("body_left",metadata["margin"])
         if damage_grid_report.get('status') == 'recovered':
             layout, damage_layout_report = observed_row_layout(layout, map_x, map_y, damage_grid_report)
@@ -421,6 +432,9 @@ class ReceiptPipeline:
         aligned = aligned_lines(dict(lines=lines), metadata)
         boundaries, segmentation = choose_row_boundaries(aligned, layout)
         layout["row_boundaries"] = enforce_cell_boundaries(aligned, layout, boundaries)
+        if metadata.get('method') == 'printed_grid_rectified':
+            layout['row_boundaries'] = refine_printed_row_boundaries(
+                rectified, layout['row_boundaries'], layout, aligned)
         rows = parse_rows(aligned, layout, layout["row_boundaries"])
         def _grid_first_read_name(crop):
             with self.ocr_lock:
@@ -544,6 +558,13 @@ class ReceiptPipeline:
             job.publish('message', title='Повторная проверка названий недоступна; исходный текст сохранён', progress=79)
         cells = grid_cells(layout, rows)
         job.json_file("layout.json", dict(layout=layout, cells=cells, segmentation=segmentation))
+        if metadata.get('method') == 'printed_grid_rectified':
+            from App.ocr.printed_grid_rectification import project_cell_boundary
+            job.json_file('original_cell_polylines.json', dict(
+                rectification_method=metadata['method'],
+                cells=[dict(row=c['row'], role=c['role'],
+                            curved_edges=project_cell_boundary(map_x, map_y, c['box']))
+                       for c in cells if c.get('kind') != 'total']))
         job.publish("cells", target="rectified", cells=cells, title="Ячейки выделены, НДС — отдельная строка", progress=79)
         for row in rows:
             row.update(name=row.get('name_recovered', row["name_raw"]), quantity=row.get("quantity",row["quantity_raw"]), price=row.get("price",row["price_raw"]), stage="ocr",

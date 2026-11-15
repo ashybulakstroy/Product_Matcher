@@ -16,3 +16,7 @@ models/tesseract/*.traineddata
 data/**
 !data/**/
 !data/**/*.md
+
+# Reproducible printed-grid OCR regression fixture and expected numbers.
+!data/ocr_regression/printed_grid_v3/photos/receipt_20261115.png
+!data/ocr_regression/printed_grid_v3/expected/receipt_20261115.json

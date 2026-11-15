@@ -1,0 +1,107 @@
+{
+  "fixture_id": "receipt_printed_grid_v3_20261115",
+  "source": "Фото, предоставленное пользователем 15.11.2026",
+  "photo": "data/photos/receipt_20261115.png",
+  "sha256": "9abb4fc7241de849a7dff69ec4360435e902f1b743a3a56ca9b9d9a497132bd9",
+  "format": "Torgsoft pre-order receipt",
+  "order_number": "2142822817",
+  "date": "2026-11-13",
+  "products": [
+    {
+      "row": 1,
+      "name_hint": "AKFIX силикон универсальный коричневый 100E",
+      "quantity": "2",
+      "price": "1200",
+      "amount": "2400"
+    },
+    {
+      "row": 2,
+      "name_hint": "Вилка каучук с заземлением тип C LEZARD",
+      "quantity": "20",
+      "price": "780",
+      "amount": "15600"
+    },
+    {
+      "row": 3,
+      "name_hint": "Гибкий гусак для кухонного смесителя",
+      "quantity": "5",
+      "price": "1250",
+      "amount": "6250"
+    },
+    {
+      "row": 4,
+      "name_hint": "Доводчик серый SS APS / STIMUL",
+      "quantity": "5",
+      "price": "3000",
+      "amount": "15000"
+    },
+    {
+      "row": 5,
+      "name_hint": "Клей МДФ 200ML+50G GA060B AKFIX",
+      "quantity": "2",
+      "price": "1250",
+      "amount": "2500"
+    },
+    {
+      "row": 6,
+      "name_hint": "Лампа светодиодная T100 30W 6400K E27 Lezard",
+      "quantity": "6",
+      "price": "2100",
+      "amount": "12600"
+    },
+    {
+      "row": 7,
+      "name_hint": "Механизм бочка унитаза боковая подводка АНИПЛАСТ WC6050M",
+      "quantity": "5",
+      "price": "3600",
+      "amount": "18000"
+    },
+    {
+      "row": 8,
+      "name_hint": "Пена-клей теплоизоляция TYTAN STYRO 753 750 мл",
+      "quantity": "1",
+      "price": "3950",
+      "amount": "3950"
+    },
+    {
+      "row": 9,
+      "name_hint": "Хомуты пластиковые 4x300 белые PROSVET",
+      "quantity": "2",
+      "price": "400",
+      "amount": "800"
+    },
+    {
+      "row": 10,
+      "name_hint": "Шуруп крупный шаг 100",
+      "quantity": "1",
+      "price": "400",
+      "amount": "400"
+    },
+    {
+      "row": 11,
+      "name_hint": "Шуруп крупный шаг 30",
+      "quantity": "2",
+      "price": "400",
+      "amount": "800"
+    },
+    {
+      "row": 12,
+      "name_hint": "Шуруп прессшайба сверло 4.2x40",
+      "quantity": "2",
+      "price": "430",
+      "amount": "860"
+    }
+  ],
+  "tax": {
+    "kind": "tax",
+    "name": "НДС 16 %",
+    "quantity": "12666",
+    "price": "1",
+    "amount": "12666"
+  },
+  "products_subtotal": "79160",
+  "printed_total": "91826.00",
+  "expected_product_rows": 12,
+  "expected_tax_rows": 1,
+  "verification": "Ручная сверка количества и цены с предоставленным изображением; названия — ориентиры, допускающие OCR-различия; суммы проверяются без вывода из итога"
+}
