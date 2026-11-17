@@ -112,7 +112,7 @@ function drawAsset(asset){
     const [x0,y0,x1,y1]=cell.bounds;
     const shape=polygon(svg,[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],'numeric-invalid-overlay');
     shape.dataset.row=cell.row;shape.dataset.field=cell.field;
-    const title=document.createElementNS(SVG_NS,'title');title.textContent=cell.field==='quantity'?'Количество не распознано':'Цена не распознана';shape.append(title);
+    const title=document.createElementNS(SVG_NS,'title');title.textContent=cell.reason==='ocr_disagreement'?'Число OCR не подтверждено: проверьте по фотографии':(cell.field==='quantity'?'Количество не распознано':'Цена не распознана');shape.append(title);
   }
 }
 function openImage(key){const asset=state.assets.get(key);if(!asset)return;$('dialog-title').textContent=asset.title;$('dialog-image').replaceChildren(asset.stage.cloneNode(true));$('image-dialog').showModal();}
@@ -526,8 +526,10 @@ function showReceiptMathWarning(result,previous){
   }
 }
 function numericProblemCells(result){
+  // Never show a numeric red overlay if both total and VAT validate.
+  if((result?.calculation?.validation_status??result?.calculation?.status)==='match')return [];
   const invalid=new Set((result.rows||[]).flatMap(row=>(row.invalid_fields||[]).filter(field=>['quantity','price'].includes(field)).map(field=>`${row.row}:${field}`)));
-  const cells=new Map((result.numeric_overlay?.cells||[]).filter(cell=>invalid.has(`${cell.row}:${cell.field}`)).map(cell=>[`${cell.row}:${cell.field}`,cell]));
+  const cells=new Map((result.numeric_overlay?.cells||[]).filter(cell=>['quantity','price'].includes(cell.field)).map(cell=>[`${cell.row}:${cell.field}`,cell]));
   for(const cell of state.assets.get('rectified')?.cells||[]){
     const key=`${cell.row}:${cell.role}`;if(!invalid.has(key)||cells.has(key))continue;
     const xs=cell.box.map(p=>p[0]),ys=cell.box.map(p=>p[1]);

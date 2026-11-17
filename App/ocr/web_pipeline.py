@@ -554,6 +554,7 @@ class ReceiptPipeline:
         job.phase('numeric',78,'Проверяем сумму НДС и числовые поля')
         job.publish('message',title='Проверяем сумму НДС и итог чека',progress=78)
         recovered_receipt=None
+        numeric_report=None
         try:
             recovered_receipt,numeric_report=recover_numeric_receipt(
                 dict(rows=rows,total_raw=total),rectified,layout,aligned,
@@ -678,7 +679,7 @@ class ReceiptPipeline:
         emit_status(job, "check", "Проверяем цены, НДС и итог",
                     details="Вычисляем суммы по прочитанным строкам")
         update_receipt(result)
-        _, numeric_overlay_report = overlay_invalid_numeric_cells(rectified, result, layout, render=False)
+        _, numeric_overlay_report = overlay_invalid_numeric_cells(rectified, result, layout, render=False, numeric_report=numeric_report)
         result['numeric_overlay'] = numeric_overlay_report
         job.json_file('rectified_numeric_overlay.json', numeric_overlay_report)
         job.publish('numeric_overlay', target='rectified', cells=numeric_overlay_report['cells'])

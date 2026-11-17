@@ -15,6 +15,7 @@ import numpy as np
 
 from App.ocr.receipt_editing import parse_number, update_receipt
 from App.ocr.numeric_settings import load_numeric_settings
+from App.ocr.numeric_consensus_math import accept_unique_single_cell_correction
 
 VERSION = 'numeric-recovery-1.1'
 NUMERIC_KINDS = {'product', 'service', 'tax'}
@@ -263,11 +264,18 @@ def _collect_updates(before, after, proposals, reason):
             updates.append(dict(row=proposal['row'], field=proposal['field'], before=str(old_value), after=str(new_value), reason=reason))
     return updates
 
-def _accept_non_total_before_total(current, proposals):
+def _accept_non_total_before_total(current, proposals, *, audit=None):
     """Prefer valid row-level fixes when the existing printed total already validates them."""
     non_total = [proposal for proposal in proposals if proposal.get('field') in {'quantity', 'price'}]
     if not non_total:
         return None, []
+    # Permit an initially valid but wrong number to be replaced ONLY
+    # with 4 agreeing OCR views and a UNIQUE exact total+VAT match.
+    corrected, changes, consensus_report = accept_unique_single_cell_correction(current, non_total)
+    if audit is not None:
+        audit['single_cell_consensus'] = consensus_report
+    if corrected is not None:
+        return corrected, changes
     trial = _apply_verified(current, non_total)
     check, check_vat = _clean_state(trial)
     if check['status'] == 'match' and check_vat in {'match', 'not_applicable'}:
@@ -370,7 +378,7 @@ def recover_numeric_receipt(receipt, image, layout, aligned_lines, recognize, *,
             tasks.append(dict(row=None, kind='total', field='total', bounds=list(total_bounds)))
         proposals = _recognition_pairs(image, tasks, recognize, ocr_lock, cfg['max_images'])
         audit['all_numeric_attempts'] = proposals
-        non_total_trial, non_total_updates = _accept_non_total_before_total(current, proposals)
+        non_total_trial, non_total_updates = _accept_non_total_before_total(current, proposals, audit=audit)
         if non_total_trial is not None:
             current = non_total_trial
             audit['accepted_without_total_retry'] = True
