@@ -108,6 +108,12 @@ function drawAsset(asset){
   }
   syncTotalHighlight(asset);
   VisualSync.drawReading(asset);
+  if(asset.key==='rectified')for(const cell of state.numericOverlay||[]){
+    const [x0,y0,x1,y1]=cell.bounds;
+    const shape=polygon(svg,[[x0,y0],[x1,y0],[x1,y1],[x0,y1]],'numeric-invalid-overlay');
+    shape.dataset.row=cell.row;shape.dataset.field=cell.field;
+    const title=document.createElementNS(SVG_NS,'title');title.textContent=cell.field==='quantity'?'Количество не распознано':'Цена не распознана';shape.append(title);
+  }
 }
 function openImage(key){const asset=state.assets.get(key);if(!asset)return;$('dialog-title').textContent=asset.title;$('dialog-image').replaceChildren(asset.stage.cloneNode(true));$('image-dialog').showModal();}
 function focusRecognitionImage(asset){
@@ -481,6 +487,7 @@ async function saveEditedRow(){
   await sendEdit(payload);
 }
 function reset(){
+  state.numericOverlay=[];
   CellPhotoPreview.hide();
   window.ReceiptUploadGate?.reset();
   VisualSync.reset();
@@ -518,6 +525,16 @@ function showReceiptMathWarning(result,previous){
     });
   }
 }
+function numericProblemCells(result){
+  const invalid=new Set((result.rows||[]).flatMap(row=>(row.invalid_fields||[]).filter(field=>['quantity','price'].includes(field)).map(field=>`${row.row}:${field}`)));
+  const cells=new Map((result.numeric_overlay?.cells||[]).filter(cell=>invalid.has(`${cell.row}:${cell.field}`)).map(cell=>[`${cell.row}:${cell.field}`,cell]));
+  for(const cell of state.assets.get('rectified')?.cells||[]){
+    const key=`${cell.row}:${cell.role}`;if(!invalid.has(key)||cells.has(key))continue;
+    const xs=cell.box.map(p=>p[0]),ys=cell.box.map(p=>p[1]);
+    cells.set(key,{row:cell.row,field:cell.role,bounds:[Math.min(...xs),Math.min(...ys),Math.max(...xs),Math.max(...ys)]});
+  }
+  return [...cells.values()];
+}
 function finish(result){
   if(!result)return;
   state.stream?.close();state.stream=null;
@@ -529,6 +546,8 @@ function finish(result){
   const previous=state.result;
   if(!previous)focusRow(null,true);
   state.result=result;window.dispatchEvent(new Event('receipt-result-updated'));state.stream?.close();state.stream=null;state.rows=new Map(result.rows.map(row=>[row.row,row]));renderRows();
+  state.numericOverlay=numericProblemCells(result);
+  const numericAsset=state.assets.get('rectified');if(numericAsset)drawAsset(numericAsset);
   $('empty-result').hidden=true;$('error-card').hidden=true;$('process-card').classList.remove('busy');setProgress(100);
   $('process-title').textContent=result.finalized?'Чек проверен и готов':'Распознавание завершено';$('process-subtitle').textContent=`${productLabel(result.product_count)} · ${(result.elapsed_ms/1000).toFixed(1)} с · ${result.catalog_names.toLocaleString('ru-RU')} названий в справочнике`;
   setPill(result.finalized?'Чек проверен':result.can_finalize?'Можно утвердить':'Нужна проверка',result.finalized?'done':result.can_finalize?'done':'processing');
@@ -556,6 +575,7 @@ function consume(event){
   else if(event.type==='draft_rows'){window.OcrActivity?.rows(event.rows);if(event.pass_similarity!==undefined)state.passSimilarity=event.pass_similarity;const asset=state.assets.get('rectified');if(asset&&event.cells)asset.cells=event.cells;VisualSync.acceptDraft(event);state.rows=new Map(event.rows.map(row=>[row.row,row]));renderRows();$('receipt-meta').textContent='Черновик из OCR · названия ещё не сверены';}
   else if(event.type==='row'){state.rows.set(event.row.row,event.row);renderRows();focusRow(event.row.row);logEvent(event.title);}
   else if(event.type==='visual'){VisualSync.handle(event);}
+  else if(event.type==='numeric_overlay'){state.numericOverlay=event.cells||[];const asset=state.assets.get(event.target);if(asset)drawAsset(asset);}
   else if(event.type==='message'){window.OcrActivity?.message(event.title);$('process-subtitle').textContent=event.title;logEvent(event.title);}
   else if(event.type==='ui_status'){window.OcrActivity?.uiStatus(event);$('process-subtitle').textContent=event.title;if(event.rows_total||event.matched_products!==undefined)logEvent(window.OcrActivity ? document.getElementById('ocr-activity-details').textContent : event.title);}
   else if(event.type==='complete'){finish(event.result);$('progress-preview-wrap').classList.remove('running');logEvent('Обработка завершена');}

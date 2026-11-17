@@ -17,6 +17,7 @@ from rapidfuzz import fuzz, process
 
 from App.ocr.ocr_activity import preliminary_row_count, completed_text_rows, row_totals, emit_status
 from App.ocr.visual_sync import emit as emit_visual, raw_row as visual_raw_row, ready_cells
+from App.ocr.numeric_overlay import overlay_invalid_numeric_cells
 from App.ocr.receipt_rectification import rectify_table
 from App.ocr.receipt_orientation_detector import orient_receipt
 from App.ocr.rotation_rectification import rotate_table_crop
@@ -677,6 +678,10 @@ class ReceiptPipeline:
         emit_status(job, "check", "Проверяем цены, НДС и итог",
                     details="Вычисляем суммы по прочитанным строкам")
         update_receipt(result)
+        _, numeric_overlay_report = overlay_invalid_numeric_cells(rectified, result, layout, render=False)
+        result['numeric_overlay'] = numeric_overlay_report
+        job.json_file('rectified_numeric_overlay.json', numeric_overlay_report)
+        job.publish('numeric_overlay', target='rectified', cells=numeric_overlay_report['cells'])
         printed_value = result['calculation'].get('expected_total')
         total_visual = None
         if footer_total_report.get('selected') and printed_value is not None:

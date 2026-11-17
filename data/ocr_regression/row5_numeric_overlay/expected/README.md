@@ -1,0 +1,1 @@
+Real-photo fixture from user diagnostic ZIP.

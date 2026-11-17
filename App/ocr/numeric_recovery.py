@@ -245,6 +245,38 @@ def _apply_verified(original, proposals, target='tax_only'):
     return receipt
 
 
+def _collect_updates(before, after, proposals, reason):
+    updates = []
+    for proposal in proposals:
+        if not proposal.get('agreed'):
+            continue
+        if proposal['field'] == 'total':
+            old_value = before.get('expected_total', before.get('total_raw', ''))
+            new_value = after.get('expected_total', after.get('total_raw', ''))
+        else:
+            old_row = next(r for r in before['rows'] if r['row'] == proposal['row'])
+            new_row = next(r for r in after['rows'] if r['row'] == proposal['row'])
+            field = proposal['field']
+            old_value = old_row.get(field, old_row.get(field + '_raw', ''))
+            new_value = new_row.get(field, new_row.get(field + '_raw', ''))
+        if _as_numeric(old_value) != _as_numeric(new_value):
+            updates.append(dict(row=proposal['row'], field=proposal['field'], before=str(old_value), after=str(new_value), reason=reason))
+    return updates
+
+def _accept_non_total_before_total(current, proposals):
+    """Prefer valid row-level fixes when the existing printed total already validates them."""
+    non_total = [proposal for proposal in proposals if proposal.get('field') in {'quantity', 'price'}]
+    if not non_total:
+        return None, []
+    trial = _apply_verified(current, non_total)
+    check, check_vat = _clean_state(trial)
+    if check['status'] == 'match' and check_vat in {'match', 'not_applicable'}:
+        updates = _collect_updates(current, trial, non_total, 'ocr_consensus_and_existing_printed_total')
+        if updates:
+            return trial, updates
+    return None, []
+
+
 def recover_numeric_receipt(receipt, image, layout, aligned_lines, recognize, *, ocr_lock=None, settings=None):
     """Run two mathematical gates, returning receipt and inspectable JSON diagnostics.
 
@@ -255,7 +287,7 @@ def recover_numeric_receipt(receipt, image, layout, aligned_lines, recognize, *,
     cfg = settings if settings is not None else load_numeric_settings()
     current = copy.deepcopy(receipt)
     initial_calc, vat = _clean_state(current)
-    audit = dict(version=VERSION, vat_rate_percent=cfg['vat_rate_percent'],
+    audit = dict(version=VERSION, accepted_without_total_retry=False, vat_rate_percent=cfg['vat_rate_percent'],
                  vat_rate_source=cfg['vat_rate_source'],
                  initial_vat_status=vat,
                  initial_total_status=initial_calc['status'],
@@ -338,32 +370,38 @@ def recover_numeric_receipt(receipt, image, layout, aligned_lines, recognize, *,
             tasks.append(dict(row=None, kind='total', field='total', bounds=list(total_bounds)))
         proposals = _recognition_pairs(image, tasks, recognize, ocr_lock, cfg['max_images'])
         audit['all_numeric_attempts'] = proposals
-        # Do not accept a candidate merely because it could be forced to balance;
-        # both different OCR preparations must independently read that exact value.
-        trial = _apply_verified(current, proposals)
-        check, check_vat = _clean_state(trial)
-        if (check['status'] == 'match' and check_vat in {'match', 'not_applicable'}
-                and (middle['status'] != 'match' or middle['vat']['status'] != 'match')):
-            updated = []
-            for proposal in proposals:
-                if not proposal['agreed']:
-                    continue
-                if proposal['field'] == 'total':
-                    before = current.get('expected_total', current.get('total_raw', ''))
-                    after = trial.get('expected_total', trial.get('total_raw', ''))
-                else:
-                    old = next(r for r in current['rows'] if r['row'] == proposal['row'])
-                    new = next(r for r in trial['rows'] if r['row'] == proposal['row'])
-                    field = proposal['field']
-                    before, after = old.get(field, old.get(field + '_raw', '')), new.get(field, new.get(field + '_raw', ''))
-                if _as_numeric(before) != _as_numeric(after):
-                    updated.append(dict(row=proposal['row'], field=proposal['field'],
-                                        before=str(before), after=str(after), reason='ocr_consensus_and_full_math'))
-            if updated:
-                audit['applied'].extend(updated)
-                current = trial
+        non_total_trial, non_total_updates = _accept_non_total_before_total(current, proposals)
+        if non_total_trial is not None:
+            current = non_total_trial
+            audit['accepted_without_total_retry'] = True
+            audit['applied'].extend(non_total_updates)
         else:
-            audit['warnings'].append('Повторное чтение всех цифр не подтвердило итог; значения не изменены')
+            # Do not accept a candidate merely because it could be forced to balance;
+            # both different OCR preparations must independently read that exact value.
+            trial = _apply_verified(current, proposals)
+            check, check_vat = _clean_state(trial)
+            if (check['status'] == 'match' and check_vat in {'match', 'not_applicable'}
+                    and (middle['status'] != 'match' or middle['vat']['status'] != 'match')):
+                updated = []
+                for proposal in proposals:
+                    if not proposal['agreed']:
+                        continue
+                    if proposal['field'] == 'total':
+                        before = current.get('expected_total', current.get('total_raw', ''))
+                        after = trial.get('expected_total', trial.get('total_raw', ''))
+                    else:
+                        old = next(r for r in current['rows'] if r['row'] == proposal['row'])
+                        new = next(r for r in trial['rows'] if r['row'] == proposal['row'])
+                        field = proposal['field']
+                        before, after = old.get(field, old.get(field + '_raw', '')), new.get(field, new.get(field + '_raw', ''))
+                    if _as_numeric(before) != _as_numeric(after):
+                        updated.append(dict(row=proposal['row'], field=proposal['field'],
+                                            before=str(before), after=str(after), reason='ocr_consensus_and_full_math'))
+                if updated:
+                    audit['applied'].extend(updated)
+                    current = trial
+            else:
+                audit['warnings'].append('Повторное чтение всех цифр не подтвердило итог; значения не изменены')
     final, _ = _clean_state(current)
     audit['final_vat_status'] = final['vat']['status']
     audit['final_total_status'] = final['status']
