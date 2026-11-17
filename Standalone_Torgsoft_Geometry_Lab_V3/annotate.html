@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"/>
+<title>Ручная эталонная разметка — Geometry Lab V3</title>
+<style>
+body{font:15px system-ui,Segoe UI,sans-serif;margin:22px;background:#f7f8fa;color:#19232d}
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:13px}
+button,select,input{padding:7px;font:inherit}canvas{border:1px solid #8899ab;background:white;max-width:100%;cursor:crosshair}
+.note{background:#fff0ce;padding:10px;border-radius:5px;max-width:1050px;margin:10px 0}
+pre{background:#edf1f5;padding:12px;white-space:pre-wrap;max-width:1050px}
+</style></head><body>
+<h2>Ручная эталонная разметка физической сетки Торгсофта</h2>
+<div class="note">Это отдельная разметка <b>на ориентированном original.png</b>. Не отмечайте синюю сетку и не используйте результаты алгоритмов как истину. Каждая линия — набор последовательных точек на реальной печатной границе. Изображение не отправляется в интернет.</div>
+<div class="controls">
+<label>Фото <input id="photo" type="file" accept="image/*"></label>
+<label>SHA256 из discover <input id="sha" size="66" placeholder="64-символьный SHA256 загрузки"></label>
+</div>
+<div class="controls">
+<label>Тип <select id="axis"><option value="vertical">Вертикальная печатная линия</option><option value="horizontal">Горизонтальная печатная линия</option></select></label>
+<button id="end">Закончить текущую линию</button><button id="undo">Отменить точку</button>
+<button id="clear">Очистить всё</button><button id="save">Сохранить JSON</button>
+</div>
+<div id="stat"></div>
+<canvas id="canvas" width="1000" height="550"></canvas>
+<p>Порядок: вертикальные линии слева направо (обычно 5), затем горизонтальные сверху вниз. Каждая линия должна содержать минимум две точки, лучше 4–10 при кривизне. Кнопка «Закончить» фиксирует её. Сохранённый файл поместите в <code>ground_truth/&lt;SHA256&gt;.json</code>.</p>
+<pre id="msg"></pre>
+<script>
+(()=>{'use strict';
+const el=x=>document.getElementById(x),canvas=el('canvas'),ctx=canvas.getContext('2d');
+let img=null,scale=1,active=[],axis='vertical',vertical=[],horizontal=[];
+function repaint(){ctx.clearRect(0,0,canvas.width,canvas.height);
+ if(img)ctx.drawImage(img,0,0,canvas.width,canvas.height);
+ const draw=(points,color)=>{if(!points.length)return;ctx.strokeStyle=color;ctx.fillStyle=color;ctx.lineWidth=2;ctx.beginPath();
+ points.forEach(([x,y],i)=>{x*=scale;y*=scale;i?ctx.lineTo(x,y):ctx.moveTo(x,y)});ctx.stroke();
+ points.forEach(([x,y])=>{ctx.beginPath();ctx.arc(x*scale,y*scale,3,0,Math.PI*2);ctx.fill();})};
+ vertical.forEach(v=>draw(v,'#06ab00'));horizontal.forEach(v=>draw(v,'#cf7b00'));draw(active,'#276bdb');
+ el('stat').textContent=`Вертикальных линий: ${vertical.length}; горизонтальных: ${horizontal.length}; точек активной линии: ${active.length}`;
+}
+el('photo').onchange=evt=>{let f=evt.target.files?.[0];if(!f)return;let url=URL.createObjectURL(f),p=new Image();p.onload=()=>{img=p;scale=Math.min(1,1200/p.width,1100/p.height);canvas.width=Math.round(p.width*scale);canvas.height=Math.round(p.height*scale);active=[];vertical=[];horizontal=[];repaint();URL.revokeObjectURL(url)};p.src=url};
+canvas.onclick=evt=>{if(!img)return;let rc=canvas.getBoundingClientRect();let x=(evt.clientX-rc.left)*canvas.width/rc.width/scale,y=(evt.clientY-rc.top)*canvas.height/rc.height/scale;active.push([Math.round(x),Math.round(y)]);repaint()};
+function closeLine(){if(active.length<2){el('msg').textContent='Нужно минимум 2 точки для линии';return false;}
+ (axis==='vertical'?vertical:horizontal).push(active);active=[];repaint();return true}
+el('end').onclick=closeLine;
+el('axis').onchange=evt=>{if(active.length){el('msg').textContent='Сначала закончите текущую линию';evt.target.value=axis;return;}axis=evt.target.value;repaint()};
+el('undo').onclick=()=>{active.pop();repaint()};
+el('clear').onclick=()=>{if(confirm('Удалить всю текущую разметку?')){active=[];vertical=[];horizontal=[];repaint()}};
+el('save').onclick=()=>{if(active.length){el('msg').textContent='Сначала закончите текущую линию';return}
+ let sha=el('sha').value.trim().toLowerCase();if(!/^[a-f0-9]{64}$/.test(sha)){el('msg').textContent='Укажите SHA256 из результата python run.py discover';return}
+ if(vertical.length!==5||horizontal.length<3){el('msg').textContent='Обычно требуется 5 вертикальных и >=3 горизонтальных печатных линий';return}
+ let json={sha256:sha,image_size:[img.naturalWidth,img.naturalHeight],vertical_polylines:vertical,horizontal_polylines:horizontal,annotation_type:'manual_source_grid_unverified',human_verified:false};
+ let href=URL.createObjectURL(new Blob([JSON.stringify(json,null,2)],{type:'application/json'}));let a=document.createElement('a');a.href=href;a.download=sha+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(href),4000);
+ el('msg').textContent='Сохранено '+sha+'.json. Поместите файл в ground_truth и повторите benchmark.'};repaint();
+})();
+</script></body></html>

@@ -1,0 +1,27 @@
+# Виртуальные окружения (локальные, не коммитятся)
+.venv/
+.venv_*/
+venv/
+env/
+
+# Python-кэш и байткод
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Кэш тестов и инструментов
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Логи и временные файлы
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+
+# Локальные результаты прогонов
+output/
+out/

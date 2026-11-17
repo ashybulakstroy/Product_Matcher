@@ -1,0 +1,3 @@
+# Test tooling; not required by the running application.
+pytest==9.2.0
+pytest-xdist==3.8.0

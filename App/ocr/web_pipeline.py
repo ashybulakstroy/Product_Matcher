@@ -36,7 +36,10 @@ from App.ocr.quantity_cells import recover_quantities
 from App.ocr.numeric_cell_split import recover as recover_numeric_cells
 from App.ocr.row_cell_split import repair as split_merged_product_rows
 from App.ocr.grid_first_rows import reconstruct_rows, preserve_source_columns, recover_printed_boundary
+from App.ocr.number_guided_rows import refine_number_guided_rows
 from App.ocr.printed_grid_adapter import maybe_use_printed_grid
+from App.ocr.footer_total_recovery import maybe_recover_footer_total
+from App.ocr.perspective_2d_grid_dewarp import maybe_refine_perspective_grid
 from App.ocr.numeric_recovery import recover_numeric_receipt
 from App.ocr.selective_number_ocr import recover_number_cells
 from App.ocr.selective_text_recovery import recover_text_names
@@ -321,7 +324,12 @@ class ReceiptPipeline:
         job.publish("region", target="original", box=[lo.tolist(), [int(hi[0]), int(lo[1])], hi.tolist(), [int(lo[0]), int(hi[1])]], progress=29)
         job.phase("geometry", 32, "Проверяем волны бумаги и выпрямляем таблицу")
         if "partial_contour_replaced_by_full_grid_hypothesis" in boundary["warnings"]:
-            rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
+            # A small angle (<2 degrees) is not an OCR failure. This branch
+            # must not terminate a valid receipt before geometric assessment.
+            try:
+                rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
+            except ValueError:
+                rectified, map_x, map_y, metadata = rectify_table(image, polygon, trust_top=True)
         elif damage_grid_report.get('status') == 'recovered':
             try:
                 rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
@@ -333,6 +341,10 @@ class ReceiptPipeline:
         (rectified, map_x, map_y, metadata), source_grid_report = preserve_source_columns(
             image, polygon, rectified, map_x, map_y, metadata)
         job.json_file('source_grid_columns.json', source_grid_report)
+        # PERSPECTIVE_2D_GRID_DEWARP_V1
+        (rectified, map_x, map_y, metadata), perspective_2d_report = maybe_refine_perspective_grid(
+            image, polygon, (rectified, map_x, map_y, metadata), output_dir=job.directory)
+        job.json_file('perspective_2d_grid_dewarp.json', perspective_2d_report)
         (rectified, map_x, map_y, metadata), printed_grid_report = maybe_use_printed_grid(
             image, (rectified, map_x, map_y, metadata), output_dir=job.directory)
         job.json_file('printed_grid_rectification.json', printed_grid_report)
@@ -454,9 +466,31 @@ class ReceiptPipeline:
             segmentation = 'verified_printed_grid_refinement'
         if grid_first_report['status'] == 'segmented_pending_numeric_check':
             job.publish('message', title=f"Товарные строки восстановлены по сетке: {len(rows)}; проверяем цифры", progress=75)
+        # NUMBER_GUIDED_ROWS_V1_START: independent printed numbers + physical row bands.
+        rows, number_guided_report = refine_number_guided_rows(
+            rectified, layout, aligned, rows,
+            header_verified=verification.get('status') == 'confirmed',
+        )
+        job.json_file('number_guided_rows.json', number_guided_report)
+        if number_guided_report.get('selected'):
+            segmentation = 'number_guided_verified_printed_grid'
+            job.publish('message', title=f"Товарные строки уточнены по номерам и сетке: {len(rows)}", progress=75)
+        # NUMBER_GUIDED_ROWS_V1_END
         total_candidates = [line for line in aligned if line["center"][1] >= layout["body_bottom"]-5
                             and line["center"][0] > layout["name_right"] and re.search(r"\d[.,]\d{2}", line["text"])]
         total = max(total_candidates,key=lambda line:line["center"][1])["text"] if total_candidates else ""
+        # PERSPECTIVE_2D_FOOTER_V2
+        # The item grid is immutable here. Look separately on the SOURCE photo.
+        def _read_source_footer(crop):
+            self.resources()
+            with self.ocr_lock:
+                return self.engine(crop)[0]
+        total, footer_total_report = maybe_recover_footer_total(
+            image, polygon, total, rapidocr=_read_source_footer,
+            output_dir=job.directory)
+        job.json_file('footer_total_recovery.json', footer_total_report)
+        if footer_total_report.get('selected'):
+            job.publish('message',title='Напечатанный итог прочитан отдельно с исходного фото',progress=75)
         if self.split_product_rows:
             split_rows,row_split_check = split_merged_product_rows(dict(rows=rows,total_raw=total),layout,lines,rectified)
         else:
@@ -515,6 +549,12 @@ class ReceiptPipeline:
                 dict(rows=rows,total_raw=total),rectified,layout,aligned,
                 lambda images:self.engine.text_recognizer(images)[0],ocr_lock=self.ocr_lock)
             rows,total=recovered_receipt['rows'],recovered_receipt['total_raw']
+            if footer_total_report.get('selected') and total != footer_total_report['printed_candidate']:
+                # Independently sourced footer is preserved; log conflicts.
+                footer_total_report['numeric_conflict']=dict(numeric_raw=total,
+                    printed_candidate=footer_total_report['printed_candidate'])
+                total=footer_total_report['printed_candidate']
+                job.json_file('footer_total_recovery.json', footer_total_report)
             job.json_file('numeric_recovery.json',numeric_report)
             if numeric_report['vat_triggered']:
                 job.publish('message',title='Дополнительно проверена сумма НДС',progress=78)
@@ -620,6 +660,10 @@ class ReceiptPipeline:
         if recovered_receipt and recovered_receipt.get('expected_total_source')=='numeric_recovery':
             for key in ('expected_total','expected_total_source','expected_total_ocr'):
                 result[key]=recovered_receipt[key]
+        if footer_total_report.get('selected'):
+            result['expected_total']=footer_total_report['printed_candidate']
+            result['expected_total_source']='source_footer_ocr'
+            result['expected_total_ocr']=footer_total_report['evidence']
         job.phase('assemble',97,'Собираем электронный чек')
         emit_status(job, "check", "Проверяем цены, НДС и итог",
                     details="Вычисляем суммы по прочитанным строкам")
