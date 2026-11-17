@@ -78,7 +78,7 @@ function focusReceiptTotal(){
   state.assets.forEach(syncTotalHighlight);
 }
 function drawAsset(asset){
-  const svg=asset.overlay;svg.replaceChildren();svg.setAttribute('viewBox',`0 0 ${asset.width} ${asset.height}`);svg.setAttribute('preserveAspectRatio','xMidYMid meet');
+  const svg=asset.overlay;svg.getAnimations({subtree:true}).forEach(animation=>animation.cancel());svg.replaceChildren();svg.setAttribute('viewBox',`0 0 ${asset.width} ${asset.height}`);svg.setAttribute('preserveAspectRatio','xMidYMid meet');
   if(asset.contour)polygon(svg,asset.contour,'boundary');
   if(asset.region)polygon(svg,asset.region,'region');
   if(asset.cells?.length){
@@ -107,6 +107,7 @@ function drawAsset(asset){
     }else scan.remove();
   }
   syncTotalHighlight(asset);
+  VisualSync.drawReading(asset);
 }
 function openImage(key){const asset=state.assets.get(key);if(!asset)return;$('dialog-title').textContent=asset.title;$('dialog-image').replaceChildren(asset.stage.cloneNode(true));$('image-dialog').showModal();}
 function focusRecognitionImage(asset){
@@ -212,14 +213,14 @@ function animateCellTransfer(cell,registerCancel){
     const tick=now=>{
       if(done)return;
       if(token!==state.token||document.hidden){land();return;}
-      const source=VisualSync.source(cell),target=receiptCell(cell.row,cell.field);
+      const source=VisualSync.source(cell),target=VisualSync.destination(cell);
       const from=visibleCellPoint(source,$('input-scroll')),to=visibleCellPoint(target,$('output-scroll'));
       // Never substitute a viewport edge or an editor control for a receipt cell.
       if(!from||!to){land();return;}
       if(started===null){
         started=now;card=node('div','receipt-transfer receipt-cell-transfer');
         card.dataset.cellKey=VisualSync.key(cell.row,cell.field);card.setAttribute('aria-hidden','true');
-        card.textContent=cell.value;
+        card.textContent=cell.field==='total'?`Итог: ${formatMoney(cell.value)}`:cell.value;
         const width=Math.max(32,Math.min(cell.field==='name'?300:110,from.width,to.width));
         Object.assign(card.style,{width:width+'px',left:'0px',top:'0px'});document.body.append(card);
       }
@@ -726,21 +727,51 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden)loadStock(
 // VISUAL_SYNC_V2_BEGIN — shared SSE state for the image and the electronic receipt.
 // No timers simulate OCR progress. Row cards are an animation of ALREADY received OCR text.
 const VisualSync = {
+  totalSource:null, laserTarget:null, laserBoxes:[],
   scanTarget:null, scanPassUsed:false, active:false, generation:0, frame:null,
   pending:new Map(), inFlight:new Map(), revealed:new Set(),
   finishing:false, pendingResult:null, cellProtocol:false,
   get presenting(){return this.active&&(this.pending.size>0||this.inFlight.size>0);},
   key(row,field){return `${Number(row)}:${field}`;},
-  source(cell){return state.assets.get('rectified')?.overlay.querySelector(`.cell-box[data-row="${cell.row}"][data-field="${cell.field}"]`);},
+  destination(cell){return cell.field==='total'?$('receipt-total'):receiptCell(cell.row,cell.field);},
+  source(cell){return cell.field==='total'?state.assets.get(this.totalSource?.target)?.overlay.querySelector('.total-transfer-source'):state.assets.get('rectified')?.overlay.querySelector(`.cell-box[data-row="${cell.row}"][data-field="${cell.field}"]`);},
+  drawReading(asset){
+    if(this.totalSource?.target===asset.key)polygon(asset.overlay,this.totalSource.box,'total-transfer-source');
+    if(this.laserTarget!==asset.key)return;
+    for(const [index,box] of this.laserBoxes.entries()){
+      polygon(asset.overlay,box,'ocr-laser-region');
+      const clip=document.createElementNS(SVG_NS,'clipPath'),clipId=`ocr-laser-${asset.key}-${state.token}-${index}`;
+      clip.id=clipId;polygon(clip,box,'');asset.overlay.append(clip);
+      const group=document.createElementNS(SVG_NS,'g');group.setAttribute('clip-path',`url(#${clipId})`);asset.overlay.append(group);
+      const xs=box.map(p=>p[0]),ys=box.map(p=>p[1]);
+      const beam=document.createElementNS(SVG_NS,'line');
+      beam.setAttribute('x1',Math.min(...xs));beam.setAttribute('x2',Math.max(...xs));
+      beam.setAttribute('y1',Math.min(...ys));beam.setAttribute('y2',Math.min(...ys));beam.setAttribute('class','ocr-laser-beam');
+      group.append(beam);
+      if(!matchMedia('(prefers-reduced-motion: reduce)').matches)beam.animate([
+        {transform:'translateY(0px)'},{transform:`translateY(${Math.max(...ys)-Math.min(...ys)}px)`}
+      ],{duration:700,iterations:Infinity,direction:'alternate',easing:'linear'});
+    }
+  },
+  setReading(target,boxes=[]){
+    const previous=this.laserTarget;this.laserTarget=boxes.length?target:null;this.laserBoxes=boxes;
+    for(const key of new Set([previous,target])){const asset=state.assets.get(key);if(asset)drawAsset(asset);}
+  },
+  totalReady(data){
+    if(!this.active||!data?.box||!data.value)return;
+    this.totalSource=data;const asset=state.assets.get(data.target);if(asset)drawAsset(asset);
+    this.acceptCell({row:0,field:'total',value:data.value});
+  },
   reset(){
     this.generation++;this.active=false;this.finishing=false;this.pendingResult=null;
     cancelAnimationFrame(this.frame);this.frame=null;
     this.inFlight.forEach(flight=>flight.cancel?.());this.inFlight.clear();
     this.pending.clear();this.revealed.clear();this.cellProtocol=false;this.stopScan();
+    this.totalSource=null;this.setReading(this.laserTarget,[]);
     document.querySelectorAll('.receipt-transfer').forEach(el=>el.remove());
   },
   begin(){this.reset();this.active=true;},
-  finished(){this.stopScan();},
+  finished(){this.stopScan();this.setReading(this.laserTarget,[]);},
   startScan(target){
     this.stopScan();this.scanTarget=target;this.scanPassUsed=false;
     state.visualScanTarget=target;state.visualScanPassed=false;
@@ -762,12 +793,13 @@ const VisualSync = {
   },
   reveal(key){
     this.revealed.add(key);
-    const [row,field]=key.split(':'),cell=receiptCell(row,field);
+    const [row,field]=key.split(':'),cell=this.destination({row,field});
+    if(field==='total'&&this.totalSource)cell.textContent=formatMoney(this.totalSource.value);
     cell?.classList.remove('receipt-cell-awaiting');cell?.removeAttribute('aria-busy');
   },
   acceptCell(cell){
     if(!this.active||!Number.isInteger(Number(cell.row))||
-       !['number','name','quantity','price'].includes(cell.field)||!String(cell.value??'').trim())return;
+       !['number','name','quantity','price','total'].includes(cell.field)||!String(cell.value??'').trim())return;
     cell={...cell,row:Number(cell.row),value:String(cell.value)};
     const key=this.key(cell.row,cell.field);
     if(this.revealed.has(key)||this.inFlight.has(key))return;
@@ -814,14 +846,14 @@ const VisualSync = {
       this.pending.forEach((_,key)=>this.reveal(key));this.pending.clear();
       this.inFlight.forEach(flight=>flight.cancel?.());this.checkFinished();return;
     }
-    const candidates=[...this.pending].filter(([,cell])=>this.source(cell)?.getClientRects().length&&receiptCell(cell.row,cell.field)?.getClientRects().length);
+    const candidates=[...this.pending].filter(([,cell])=>this.source(cell)?.getClientRects().length&&this.destination(cell)?.getClientRects().length);
     if(!this.inFlight.size&&candidates.length){
       const cell=candidates[0][1];
       this.align($('input-scroll'),this.source(cell));
-      this.align($('output-scroll'),receiptCell(cell.row,cell.field));
+      this.align($('output-scroll'),this.destination(cell));
     }
     for(const [key,cell] of candidates){
-      if(visibleCellPoint(this.source(cell),$('input-scroll'))&&visibleCellPoint(receiptCell(cell.row,cell.field),$('output-scroll')))this.launch(key,cell);
+      if(visibleCellPoint(this.source(cell),$('input-scroll'))&&visibleCellPoint(this.destination(cell),$('output-scroll')))this.launch(key,cell);
     }
     // Missing geometry never invents a destination; final data is still available.
     if(this.finishing&&!this.inFlight.size&&this.pending.size){
@@ -832,6 +864,7 @@ const VisualSync = {
   deferFinish(result){
     if(!this.active)return false;
     this.finishing=true;this.pendingResult=result;
+    if(result.printed_total_visual&&!this.totalSource)this.totalReady(result.printed_total_visual);
     state.rows=new Map(result.rows.map(row=>[row.row,row]));
     this.acceptRows(result.rows);renderRows();this.schedule();return true;
   },
@@ -845,6 +878,9 @@ const VisualSync = {
     switch(event.action){
       case 'scan_start':this.startScan(event.target);break;
       case 'scan_stop':this.stopScan();break;
+      case 'scan_region':this.setReading(event.target,event.boxes||[]);break;
+      case 'scan_region_end':if(this.laserTarget===event.target)this.setReading(event.target,[]);break;
+      case 'total_ready':this.totalReady(event);break;
       case 'row_ready':this.rowReady(event.row);break;
       default:if(event.message&&!this.finishing)$('process-subtitle').textContent=event.message;
     }

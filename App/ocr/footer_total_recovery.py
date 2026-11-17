@@ -190,7 +190,7 @@ def _tesseract_readings(crop,exe=None, timeout=12):
     return results,'ok'
 
 
-def recover_footer_total(image, polygon, *, rapidocr=None, tesseract=True, save_crop=None):
+def recover_footer_total(image, polygon, *, rapidocr=None, tesseract=True, save_crop=None, on_region=None):
     """Return recognized printed total or None, together with evidence.
 
     Never accepts a computed total argument and never modifies item-grid pixels.
@@ -204,6 +204,14 @@ def recover_footer_total(image, polygon, *, rapidocr=None, tesseract=True, save_
     if save_crop is not None:
         Path(save_crop).parent.mkdir(parents=True,exist_ok=True)
         cv2.imwrite(str(save_crop),crop)
+    if on_region:on_region(bounds, True)
+    try:
+        return _read_footer_crop(crop, report, rapidocr, tesseract)
+    finally:
+        if on_region:on_region(bounds, False)
+
+
+def _read_footer_crop(crop, report, rapidocr, tesseract):
     readings,status=_rapid_read(crop,rapidocr)
     report.update(rapidocr=dict(status=status,readings=readings))
     rapid_candidates=[dict(value=m['value'],confidence=l['confidence'],raw=m['raw'])
@@ -239,7 +247,7 @@ def setting_mode(root=None):
 
 
 def maybe_recover_footer_total(image,polygon, current_total, *, rapidocr=None,
-                                output_dir=None, mode_override=None):
+                                output_dir=None, mode_override=None, on_region=None):
     """Adapter: return old/new *printed* total and JSON-safe audit.
 
     Shadow may run diagnostics but never changes the total. The item rows and
@@ -254,7 +262,7 @@ def maybe_recover_footer_total(image,polygon, current_total, *, rapidocr=None,
         return current_total,dict(audit,reason='printed_total_already_read')
     filename=(Path(output_dir)/'footer_total_crop.png') if output_dir is not None else None
     detected,report=recover_footer_total(image,polygon,rapidocr=rapidocr,
-                                        tesseract=True,save_crop=filename)
+                                        tesseract=True,save_crop=filename, on_region=on_region)
     audit.update(status=report['status'],evidence=report,printed_candidate=detected)
     if detected is None:return current_total,audit
     if mode=='shadow':return current_total,dict(audit,status='shadow_confirmed',reason='diagnostic_only')

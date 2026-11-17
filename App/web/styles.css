@@ -7,6 +7,9 @@
 
 /* VISUAL_SYNC_V2: a one-time scan pass occurs ONLY while RapidOCR is running. */
 .image-stage .scan-line { animation: none !important; pointer-events:none; }
+.ocr-laser-region{fill:#20ff781c!important;stroke:#12ed65!important;stroke-width:2!important;filter:drop-shadow(0 0 4px #18f479);pointer-events:none}
+.ocr-laser-beam{stroke:#72ffa3;stroke-width:2.5;filter:drop-shadow(0 0 5px #00ff66);pointer-events:none}
+.total-transfer-source{fill:transparent!important;stroke:#22c56c!important;stroke-width:2;pointer-events:none}
 .image-card.scan-running .operation-tag { animation: pulse 1.5s ease-in-out infinite; }
 .image-card.scan-running .image-stage { outline: 2px solid rgba(64,121,221,.35); outline-offset:-2px; }
 @media (prefers-reduced-motion:reduce) {

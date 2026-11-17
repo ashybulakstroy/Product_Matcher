@@ -30,7 +30,7 @@ from App.ocr.damaged_receipt_text import detect_damage_stripe, affected_name_row
 from App.ocr.full_grid_boundary import detect_full_grid_boundary
 from App.ocr.receipt_roi_recovery import recover_table_boundary, recover_compact_table
 from App.ocr.table_verification import verify_table_candidate
-from App.ocr.receipt_editing import initialize_row, save_receipt, update_receipt
+from App.ocr.receipt_editing import initialize_row, save_receipt, update_receipt, parse_number
 from App.ocr.manual_mappings import ManualMappings
 from App.ocr.quantity_cells import recover_quantities
 from App.ocr.numeric_cell_split import recover as recover_numeric_cells
@@ -174,7 +174,12 @@ class ReceiptPipeline:
                     results, elapsed = [], 0.
                     size = max(1, recognizer.rec_batch_num)
                     for start in range(0, len(images), size):
-                        batch, seconds = recognizer(images[start:start+size])
+                        emit_visual(job, 'scan_region', target=target,
+                                    boxes=[np.asarray(box).tolist() for box in detected[start:start+size]])
+                        try:
+                            batch, seconds = recognizer(images[start:start+size])
+                        finally:
+                            emit_visual(job, 'scan_region_end', target=target)
                         results.extend(batch)
                         elapsed += seconds
                         if on_partial and detected:
@@ -487,7 +492,11 @@ class ReceiptPipeline:
                 return self.engine(crop)[0]
         total, footer_total_report = maybe_recover_footer_total(
             image, polygon, total, rapidocr=_read_source_footer,
-            output_dir=job.directory)
+            output_dir=job.directory,
+            on_region=lambda bounds, active: emit_visual(
+                job, 'scan_region' if active else 'scan_region_end', target='original',
+                boxes=[[[bounds[0],bounds[1]],[bounds[2],bounds[1]],
+                        [bounds[2],bounds[3]],[bounds[0],bounds[3]]]] if active else []))
         job.json_file('footer_total_recovery.json', footer_total_report)
         if footer_total_report.get('selected'):
             job.publish('message',title='Напечатанный итог прочитан отдельно с исходного фото',progress=75)
@@ -668,6 +677,23 @@ class ReceiptPipeline:
         emit_status(job, "check", "Проверяем цены, НДС и итог",
                     details="Вычисляем суммы по прочитанным строкам")
         update_receipt(result)
+        printed_value = result['calculation'].get('expected_total')
+        total_visual = None
+        if footer_total_report.get('selected') and printed_value is not None:
+            bounds = footer_total_report.get('evidence', {}).get('amount_crop')
+            if bounds:
+                x0, y0, x1, y1 = bounds
+                total_visual = dict(target='original', box=[[x0,y0],[x1,y0],[x1,y1],[x0,y1]])
+        elif printed_value is not None:
+            candidate = next((line for line in reversed(total_candidates)
+                              if parse_number(line['text']) == parse_number(printed_value)), None)
+            if candidate is not None:
+                box = candidate.get('eval_box', candidate.get('box'))
+                if box is not None:
+                    total_visual = dict(target='rectified', box=np.asarray(box).tolist())
+        if total_visual:
+            result['printed_total_visual'] = dict(total_visual, value=str(printed_value))
+            emit_visual(job, 'total_ready', **result['printed_total_visual'])
         save_receipt(job.directory, result)
         emit_status(job, "check", "Данные чека подготовлены",
                     details=f"{len(products)} товаров, требуют проверки: {result['review_count']}")

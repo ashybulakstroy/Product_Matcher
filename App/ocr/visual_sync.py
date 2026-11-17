@@ -35,7 +35,8 @@ def ready_cells(rows, layout, pending_boxes=()):
 
 SCHEMA_VERSION = "visual-sync-2.0"
 ACTIONS = frozenset({"geometry_found", "geometry_ready", "scan_start", "scan_stop",
-                    "row_ready", "rows_ready", "checking", "matching"})
+                    "row_ready", "rows_ready", "checking", "matching",
+                    "scan_region", "scan_region_end", "total_ready"})
 
 
 def emit(job: Any, action: str, **fields: Any) -> None:
