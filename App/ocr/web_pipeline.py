@@ -156,7 +156,9 @@ class ReceiptPipeline:
             self.engine = RapidOCR(rec_model_path=str(MODEL), rec_img_shape=[3, 48, 320], text_score=.3)
 
     def recognize(self, path, job, target, progress, on_partial=None, row_boundaries=None):
+        job.check_cancelled()
         with self.ocr_lock:
+            job.check_cancelled()
             detector, recognizer = self.engine.text_detector, self.engine.text_recognizer
 
             detected = []
@@ -175,12 +177,14 @@ class ReceiptPipeline:
                     results, elapsed = [], 0.
                     size = max(1, recognizer.rec_batch_num)
                     for start in range(0, len(images), size):
+                        job.check_cancelled()
                         emit_visual(job, 'scan_region', target=target,
                                     boxes=[np.asarray(box).tolist() for box in detected[start:start+size]])
                         try:
                             batch, seconds = recognizer(images[start:start+size])
                         finally:
                             emit_visual(job, 'scan_region_end', target=target)
+                        job.check_cancelled()
                         results.extend(batch)
                         elapsed += seconds
                         if on_partial and detected:
@@ -201,7 +205,9 @@ class ReceiptPipeline:
                     return results, elapsed
             self.engine.text_recognizer = StreamingRecognizer()
             try:
+                job.check_cancelled()
                 result, times = self.engine(str(path))
+                job.check_cancelled()
             finally:
                 self.engine.text_detector, self.engine.text_recognizer = detector, recognizer
         return result or []
@@ -214,7 +220,19 @@ class ReceiptPipeline:
             return self._process_attempt(job, orientation_mode="recovery")
 
     def _process_attempt(self, job, *, orientation_mode):
+        job.check_cancelled()
         started = perf_counter()
+        def read_numbers(images):
+            job.check_cancelled()
+            result = self.engine.text_recognizer(images)[0]
+            job.check_cancelled()
+            return result
+
+        def read_crop(crop):
+            job.check_cancelled()
+            result = self.engine(crop)[0]
+            job.check_cancelled()
+            return result
         job.phase("input", 5, "Подготавливаем фотографию")
         emit_status(job, "input", "Проверяем ориентацию и качество фотографии")
         image, exif_rotated = decode_photo((job.directory / "upload.bin").read_bytes())
@@ -257,10 +275,12 @@ class ReceiptPipeline:
         header_ocr_calls = 0
         def recognize_table_header(header):
             nonlocal header_ocr_calls
+            job.check_cancelled()
             self.resources()
+            job.check_cancelled()
             with self.ocr_lock:
                 header_ocr_calls += 1
-                return self.engine(header)[0]
+                return read_crop(header)
         emit_status(job, 'geometry', 'Проверяем сетку и заголовок таблицы',
                     details='Подтверждаем область перед распознаванием товаров')
         verification = verify_table_candidate(image, boundary, recognize_table_header)
@@ -455,11 +475,15 @@ class ReceiptPipeline:
                 rectified, layout['row_boundaries'], layout, aligned)
         rows = parse_rows(aligned, layout, layout["row_boundaries"])
         def _grid_first_read_name(crop):
+            job.check_cancelled()
             with self.ocr_lock:
-                return self.engine(crop)[0]
+                job.check_cancelled()
+                return read_crop(crop)
         def _grid_first_read_numbers(images):
+            job.check_cancelled()
             with self.ocr_lock:
-                return self.engine.text_recognizer(images)[0]
+                job.check_cancelled()
+                return read_numbers(images)
         rows, grid_first_report = reconstruct_rows(
             rectified, layout, aligned, rows,
             read_name=lambda crop: _grid_first_read_name(crop),
@@ -488,9 +512,12 @@ class ReceiptPipeline:
         # PERSPECTIVE_2D_FOOTER_V2
         # The item grid is immutable here. Look separately on the SOURCE photo.
         def _read_source_footer(crop):
+            job.check_cancelled()
             self.resources()
+            job.check_cancelled()
             with self.ocr_lock:
-                return self.engine(crop)[0]
+                job.check_cancelled()
+                return read_crop(crop)
         total, footer_total_report = maybe_recover_footer_total(
             image, polygon, total, rapidocr=_read_source_footer,
             output_dir=job.directory,
@@ -515,7 +542,7 @@ class ReceiptPipeline:
             job.publish('message',title=f'Склеенные товарные строки разделены: {restored_count}; печатная граница, числа и итог проверены',progress=76)
         rows, number_report = recover_number_cells(
             rectified, rows, layout,
-            lambda crops: self.engine.text_recognizer(crops)[0],
+            read_numbers,
             ocr_lock=self.ocr_lock,
         )
         job.json_file('selective_number_ocr.json', number_report)
@@ -528,7 +555,7 @@ class ReceiptPipeline:
         emit_status(job, "check", "Проверяем количество и цены", details="Уточняем неоднозначные значения")
         with self.ocr_lock:
             recovered,quantity_check,_ = recover_quantities(dict(rows=rows,total_raw=total),rectified,layout,
-                lambda crops:self.engine.text_recognizer(crops)[0])
+                read_numbers)
         job.json_file("quantity_cells.json",quantity_check)
         if quantity_check["attempts"]:
             if quantity_check["applied"]:
@@ -558,7 +585,7 @@ class ReceiptPipeline:
         try:
             recovered_receipt,numeric_report=recover_numeric_receipt(
                 dict(rows=rows,total_raw=total),rectified,layout,aligned,
-                lambda images:self.engine.text_recognizer(images)[0],ocr_lock=self.ocr_lock)
+                read_numbers,ocr_lock=self.ocr_lock)
             rows,total=recovered_receipt['rows'],recovered_receipt['total_raw']
             if footer_total_report.get('selected') and total != footer_total_report['printed_candidate']:
                 # Independently sourced footer is preserved; log conflicts.
@@ -598,7 +625,7 @@ class ReceiptPipeline:
         try:
             rows, text_recovery_report = recover_text_names(
                 rows, aligned, rectified, layout,
-                rapidocr=lambda crop: self.engine(crop)[0], ocr_lock=self.ocr_lock,
+                rapidocr=read_crop, ocr_lock=self.ocr_lock,
                 output_dir=job.directory / 'text_recovery',
                 force_rows=damage_forced_rows,
             )

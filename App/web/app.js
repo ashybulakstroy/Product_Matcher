@@ -7,7 +7,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
 const state = {job:null, stream:null, assets:new Map(), rows:new Map(), result:null, token:0,
   maxUpload:20*1024*1024, activePhase:null, completed:new Set(), reviewOnly:false, selectedRow:null, blob:null,
   editingRow:null, selectedCatalog:null, searchToken:0, saving:false, passSimilarity:87, totalFocused:false,
-  lastEventId:0};
+  lastEventId:0, pendingUpload:null};
 const stepKeys = ['geometry','ocr','layout','matching'];
 function productLabel(count){const n=count%100;return count+' '+(n>=11&&n<=14?'товаров':count%10===1?'товар':count%10>=2&&count%10<=4?'товара':'товаров');}
 function node(tag, className='', text=''){const element=document.createElement(tag);element.className=className;if(text!==undefined)element.textContent=text;return element;}
@@ -487,6 +487,7 @@ async function saveEditedRow(){
   await sendEdit(payload);
 }
 function reset(){
+  $('cancel-receipt').hidden=true;
   state.numericOverlay=[];
   CellPhotoPreview.hide();
   window.ReceiptUploadGate?.reset();
@@ -504,6 +505,7 @@ function reset(){
   document.querySelectorAll('[data-step]').forEach(step=>step.classList.remove('active','complete'));setProgress(0);setPill('Обработка','processing');
 }
 function showError(message){
+  $('cancel-receipt').hidden=true;
   window.ReceiptUploadGate?.failed(message);
   VisualSync.reset();
   window.OcrActivity?.finish(false);
@@ -539,6 +541,7 @@ function numericProblemCells(result){
 }
 function finish(result){
   if(!result)return;
+  $('cancel-receipt').hidden=true;
   state.stream?.close();state.stream=null;
   if(VisualSync.deferFinish(result))return;
   window.ReceiptUploadGate?.finished(result);
@@ -581,8 +584,8 @@ function consume(event){
   else if(event.type==='message'){window.OcrActivity?.message(event.title);$('process-subtitle').textContent=event.title;logEvent(event.title);}
   else if(event.type==='ui_status'){window.OcrActivity?.uiStatus(event);$('process-subtitle').textContent=event.title;if(event.rows_total||event.matched_products!==undefined)logEvent(window.OcrActivity ? document.getElementById('ocr-activity-details').textContent : event.title);}
   else if(event.type==='complete'){finish(event.result);$('progress-preview-wrap').classList.remove('running');logEvent('Обработка завершена');}
-  else if(event.type==='error')showError(event.title);
-  if(event.type!=='complete'&&event.type!=='error')followProcessing();
+  else if(event.type==='error'||event.type==='cancelled')showError(event.title||'Обработка отменена');
+  if(!['complete','error','cancelled'].includes(event.type))followProcessing();
   // Per-cell transfers follow completed OCR boxes, independently of catalog matching.
 }
 function listen(jobId, token){
@@ -593,22 +596,71 @@ function listen(jobId, token){
   state.stream.onerror=async()=>{
     if(token!==state.token)return;
     window.OcrActivity?.connectionLost();
-    try{const response=await fetch(`/api/jobs/${jobId}`);if(!response.ok)throw Error();const job=await response.json();for(const event of job.events||[])consume(event);if(job.status==='done')finish(job.result);else if(job.status==='failed')showError(job.error);else $('process-subtitle').textContent='Восстанавливаем связь с обработкой…';}catch{ $('process-subtitle').textContent='Нет связи с сервером. Ожидаем подключения…'; }
+    try{const response=await fetch(`/api/jobs/${jobId}`);if(!response.ok)throw Error();const job=await response.json();if(token!==state.token)return;for(const event of job.events||[])consume(event);if(job.status==='done')finish(job.result);else if(job.status==='failed'||job.status==='cancelled')showError(job.error||'Обработка отменена');else $('process-subtitle').textContent='Восстанавливаем связь с обработкой…';}catch{ if(token===state.token)$('process-subtitle').textContent='Нет связи с сервером. Ожидаем подключения…'; }
   };
 }
 async function upload(file){
   if(!file)return;
   if(file.size>state.maxUpload){toast(`Максимальный размер фото — ${Math.floor(state.maxUpload/1024/1024)} МБ`);return;}
   if(file.type&&!['image/jpeg','image/png','image/webp'].includes(file.type)){toast('Выберите фотографию JPG, PNG или WEBP');return;}
-  reset();VisualSync.begin();window.OcrActivity?.start();const token=state.token;window.ReceiptUploadGate?.begin(token);$('drop-zone').hidden=true;$('input-note').hidden=false;state.blob=URL.createObjectURL(file);
+  reset();$('cancel-receipt').hidden=false;VisualSync.begin();window.OcrActivity?.start();const token=state.token;window.ReceiptUploadGate?.begin(token);$('drop-zone').hidden=true;$('input-note').hidden=false;state.blob=URL.createObjectURL(file);
   logEvent('Начало обработки: '+file.name);
   const preview=new Image();preview.src=state.blob;preview.onload=()=>{if(token===state.token&&!state.assets.has('original'))addArtifact({key:'original',role:'original',title:'Исходное фото',subtitle:file.name,url:preview.src,width:preview.naturalWidth,height:preview.naturalHeight});};
   $('process-title').textContent='Загружаем фотографию';$('process-subtitle').textContent=file.name;
-  try{
+  // Retain POST result so that Cancel can stop a job whose ID is not yet known.
+  const request=(async()=>{
     const response=await (TASK?postTaskPhoto(file):fetch('/api/jobs?filename='+encodeURIComponent(file.name||'clipboard.png'),{method:'POST',headers:{'Content-Type':file.type||'application/octet-stream'},body:file}));
-    const job=await response.json();if(!response.ok)throw Error(job.error||'Не удалось загрузить фотографию');if(token!==state.token)return;
+    const job=await response.json();if(!response.ok)throw Error(job.error||'Не удалось загрузить фотографию');
+    return job;
+  })();
+  state.pendingUpload=request;
+  try{
+    const job=await request;
+    if(token!==state.token){ // Abandoned in-flight upload: don't leave a running job.
+      void cancelRemoteJob(job.job_id||job.id).catch(error=>console.error('Отмена предыдущей загрузки:',error));
+      return;
+    }
     state.job=job.job_id||job.id;if(TASK)updateTaskBadge(job);window.ReceiptUploadGate?.accepted(token);try{localStorage.setItem('receipt-last-job',state.job);}catch{}listen(state.job,token);
   }catch(error){if(token===state.token)showError(error.message||'Не удалось связаться с сервером');}
+  finally{if(state.pendingUpload===request)state.pendingUpload=null;}
+}
+async function cancelRemoteJob(id){
+  if(!id)return;
+  const response=await fetch(`/api/jobs/${id}/cancel`,{method:'POST'});
+  if(!response.ok)throw Error('Сервер не подтвердил отмену обработки');
+  return response.json();
+}
+let cancellingReceipt=false;
+async function cancelReceipt(event){
+  event?.preventDefault();event?.stopPropagation();
+  if(cancellingReceipt||$('cancel-receipt').hidden)return;
+  cancellingReceipt=true;
+  $('cancel-receipt').disabled=true;
+  const previousJob=state.job;
+  const pending=state.pendingUpload;
+  reset(); // Close SSE, clear the old receipt and invalidate stale event callbacks.
+  $('drop-zone').hidden=false;
+  $('input-note').hidden=true;
+  $('empty-result').hidden=false;
+  $('process-card').classList.remove('busy');
+  $('process-title').textContent='Ожидаем фотографию чека';
+  $('process-subtitle').textContent='Новая обработка';
+  setPill('Ожидает фото','neutral');
+  try{localStorage.removeItem('receipt-last-job');}catch{}
+  try{
+    if(previousJob)await cancelRemoteJob(previousJob);
+    // If clicked during upload, wait for the short POST reply to learn its job ID.
+    if(pending){
+      const uploaded=await pending.catch(()=>null);
+      const uploadedId=uploaded?.job_id||uploaded?.id;
+      if(uploadedId&&uploadedId!==previousJob)await cancelRemoteJob(uploadedId);
+    }
+  }catch(error){
+    console.error('Сервер не подтвердил отмену OCR',error);
+    toast('Сервер не подтвердил отмену OCR. Проверьте нагрузку ЦПУ.');
+  }finally{
+    location.assign('/?new=1'); // New blank standard page, including 1C invoice panel.
+  }
 }
 function postTaskPhoto(file){
   const form=new FormData();form.append('file',file,file.name||'clipboard.png');
@@ -671,7 +723,7 @@ async function loadJob(id,token){
       logEvent('Восстановлен сохранённый результат: '+job.filename);
       const layoutResponse=await fetch(`/api/jobs/${id}/files/layout.json`);
       if(layoutResponse.ok&&token===state.token){const data=await layoutResponse.json();const asset=state.assets.get('rectified');if(asset){asset.cells=data.cells;drawAsset(asset);}}
-    }else if(job.status==='failed')showError(job.error);else{window.OcrActivity?.start();$('process-card').classList.add('busy');setPill('Обработка','processing');listen(id,token);}
+    }else if(job.status==='failed'||job.status==='cancelled')showError(job.error||'Обработка отменена');else{$('cancel-receipt').hidden=false;window.OcrActivity?.start();$('process-card').classList.add('busy');setPill('Обработка','processing');listen(id,token);}
   }catch{}
 }
 async function restore(){
@@ -683,6 +735,7 @@ document.querySelector('.app-header').addEventListener('click',event=>{
   event.preventDefault();location.assign('/');
 });
 $('debug-toggle').checked=false;
+$('cancel-receipt').addEventListener('click',cancelReceipt);
 $('debug-toggle').addEventListener('change',event=>document.body.classList.toggle('debug-mode',event.target.checked));
 ['choose-main','choose-top','retry-button'].forEach(id=>$(id).addEventListener('click',event=>{event.stopPropagation();$('file-input').click();}));
 $('drop-zone').addEventListener('click',event=>{if(!event.target.closest('button'))$('file-input').click();});
@@ -1072,9 +1125,9 @@ window.ReceiptUploadGate = (() => {
   }
   function restored(job){
     clearBadge();currentToken=state.token;acceptedToken=null;shownToken=null;
-    ready=Boolean(job&&job.status!=='failed');
+    ready=Boolean(job&&!['failed','cancelled'].includes(job.status));
     if(job?.status==='done')finished(job.result);
-    else if(job?.status==='failed')transition('failed');
+    else if(job?.status==='failed'||job?.status==='cancelled')transition('failed');
     else transition('ready');
   }
   function failed(message){

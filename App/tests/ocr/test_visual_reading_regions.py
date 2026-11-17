@@ -21,6 +21,9 @@ def test_reading_highlight_brackets_each_actual_recognition_batch():
             self.text_recognizer([np.zeros((10,10,3),np.uint8)]*2)
             return [],None
     class Job:
+        def check_cancelled(self):
+            pass
+
         def publish(self,kind,**kw):
             if kind=='visual':events.append((kw['action'],kw.get('boxes')))
     pipeline=ReceiptPipeline(knowledge={});pipeline.engine=Engine()

@@ -36,6 +36,10 @@ DOWNLOADS = {"receipt.json", "receipt.csv", "ocr_rectified.txt", "ocr_rectified.
              "layout.json", "rectification.json", "rectification_map.npz", "quantity_cells.json", "numeric_split.json", "row_split.json", "upload.bin"}
 
 
+class JobCancelled(Exception):
+    """User-requested cooperative stop (never treated as OCR failure)."""
+
+
 class Job:
     def __init__(self, job_id, filename, directory):
         self.id, self.filename, self.directory = job_id, filename, directory
@@ -43,10 +47,28 @@ class Job:
         self.result, self.artifacts, self.events = None, [], []
         self.created_at = time()
         self.condition = threading.Condition()
+        self.cancel_event = threading.Event()
         self.active_stage = None
         self.active_stage_title = ""
         self.active_stage_started = None
         self.stage_sequence = 0
+
+    def check_cancelled(self):
+        if self.cancel_event.is_set():
+            raise JobCancelled('Обработка отменена пользователем')
+
+    def cancel(self):
+        """Idempotent: only queued/running jobs may be cancelled."""
+        with self.condition:
+            if self.status not in {'queued', 'processing'}:
+                return False
+            self.cancel_event.set()
+            self.status = 'cancelled'
+            self.error = 'Обработка отменена пользователем'
+            self.active_stage = None
+            self.publish('cancelled', title=self.error, progress=self.progress)
+        self.persist()
+        return True
 
     def public(self):
         return dict(id=self.id, filename=self.filename, status=self.status, progress=self.progress,
@@ -55,6 +77,8 @@ class Job:
 
     def publish(self, event_type, **payload):
         with self.condition:
+            if self.cancel_event.is_set() and event_type != 'cancelled':
+                raise JobCancelled('Обработка отменена пользователем')
             if "progress" in payload:
                 self.progress = max(self.progress, int(payload["progress"]))
                 payload["progress"] = self.progress
@@ -86,9 +110,12 @@ class Job:
         self.active_stage_started = None
 
     def json_file(self, name, data):
+        if name != 'state.json':
+            self.check_cancelled()
         (self.directory / name).write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
     def image(self, key, image, title, subtitle="", role="derived"):
+        self.check_cancelled()
         path = self.directory / f"{key}.png"
         ok, encoded = cv2.imencode(".png", image)
         if not ok:
@@ -101,7 +128,8 @@ class Job:
         self.publish("artifact", artifact=asset)
 
     def persist(self):
-        self.json_file("state.json", self.public())
+        with self.condition:
+            self.json_file("state.json", self.public())
 
 
 class JobStore:
@@ -123,12 +151,14 @@ class JobStore:
                 for key in ("status", "progress", "error", "result", "artifacts", "created_at", "events"):
                     if key in state:
                         setattr(job, key, state[key])
-                if job.status not in {"done", "failed"}:
+                if job.status not in {"done", "failed", "cancelled"}:
                     job.status, job.error = "failed", "Обработка прервана перезапуском сервера. Загрузите фото ещё раз."
+                if job.status == "cancelled":
+                    job.cancel_event.set()
                 if job.status == "done" and job.result and "rows" in job.result:
                     update_receipt(job.result)
                     save_receipt(job.directory, job.result)
-                job.publish("complete" if job.status == "done" else "error", result=job.result, title=job.error, progress=job.progress)
+                job.publish("complete" if job.status == "done" else ("cancelled" if job.status == "cancelled" else "error"), result=job.result, title=job.error, progress=job.progress)
                 self.jobs[job.id] = job
             except (ValueError, KeyError, OSError):
                 continue
@@ -148,23 +178,34 @@ class JobStore:
         return job
 
     def _process(self, job):
-        job.status = "processing"
+        with job.condition:
+            if job.cancel_event.is_set():
+                return  # Queued job was cancelled before the worker started.
+            job.status = "processing"
         try:
+            job.check_cancelled()
             result = self.processor(job)
+            job.check_cancelled()
             with job.condition:
+                job.check_cancelled()
                 job.finish_stage("done")
                 job.result, job.status = result, "done"
                 job.publish("stage", stage="completed", stage_id=job.stage_sequence+1,
                             label="Электронный чек готов", effect="done", status="done",
                             elapsed_ms=0, progress=100)
                 job.publish("complete", result=result, progress=100, title="Электронный чек готов")
+        except JobCancelled:
+            pass  # Cancellation status and terminal SSE event already published.
         except Exception as error:
-            (job.directory / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
-            job.status = "failed"
-            job.error = str(error) if isinstance(error, ValueError) else "Не удалось завершить обработку. Попробуйте другое фото."
-            job.finish_stage("error", job.error)
-            job.publish("error", title=job.error, progress=job.progress)
-            traceback.print_exc()
+            with job.condition:
+                if job.cancel_event.is_set():
+                    return
+                (job.directory / "error.log").write_text(traceback.format_exc(), encoding="utf-8")
+                job.status = "failed"
+                job.error = str(error) if isinstance(error, ValueError) else "Не удалось завершить обработку. Попробуйте другое фото."
+                job.finish_stage("error", job.error)
+                job.publish("error", title=job.error, progress=job.progress)
+                traceback.print_exc()
         finally:
             job.persist()
 
@@ -753,7 +794,7 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
                 while True:
                     with job.condition:
                         pending = [event for event in job.events if event["id"] > after]
-                        terminal = job.status in {"done", "failed"}
+                        terminal = job.status in {"done", "failed", "cancelled"}
                         if not pending and not terminal:
                             job.condition.wait(timeout=12)
                     for event in pending:
@@ -770,6 +811,16 @@ def create_server(host=None, port=None, output_dir=None, processor=None, max_upl
 
         def do_POST(self):
             parts = urlparse(self.path)
+            cancel_route = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/cancel', parts.path)
+            if cancel_route:
+                if self.headers.get('Transfer-Encoding') or self.headers.get('Content-Length', '0') != '0':
+                    self.close_connection = True
+                    return self.send_json(dict(error='Запрос отмены не должен содержать тело'), 400)
+                job = store.get(cancel_route[1])
+                if job is None:
+                    return self.send_json(dict(error='Обработка не найдена'), 404)
+                changed = job.cancel()
+                return self.send_json(dict(id=job.id, status=job.status, cancelled=changed))
             if parts.path == '/api/1c/stock-sync':
                 return self.stock_upload()
             if parts.path == "/tasks":
