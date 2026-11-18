@@ -9,6 +9,8 @@ import re
 import unicodedata
 
 import cv2
+from App.ocr.ocr_early_optimization import can_skip_header_ocr
+# OCR_LAZY_HEADER_PHASES_V1
 import numpy as np
 from rapidfuzz.fuzz import ratio
 
@@ -123,9 +125,19 @@ def verify_table_candidate(image, boundary, recognize_header=None):
     if dense_bars:
         report.update(status='rejected', reason='barcode_not_product_grid')
         return report
-    report['header'] = _header_evidence(sample, recognize_header)
     support = (boundary.get('selected') or {}).get('support') or [0, 0]
     grid_support = len(support) == 2 and support[0] >= 3 and 3 <= support[1] <= 6
+    # Exactly the established geometry-only acceptance gate. On strong
+    # physical evidence, neural OCR cannot improve the accept/reject outcome.
+    if can_skip_header_ocr(four_columns=four_columns, header_row=header_row,
+                           grid_support=grid_support, dense_bars=dense_bars,
+                           recognize_header=recognize_header):
+        report['header'] = dict(state='skipped_geometry_confirmed', roles=[])
+        report.update(status='confirmed', reason='four_columns_and_header_geometry',
+                      verification_source='printed_grid_only', header_ocr_skipped=True)
+        return report
+    report['header'] = _header_evidence(sample, recognize_header)
+    report['header_ocr_skipped'] = False
     if report['header']['state'] == 'confirmed' and grid_support:
         report.update(status='confirmed', reason='header_words_and_grid')
     elif four_columns and header_row and grid_support:

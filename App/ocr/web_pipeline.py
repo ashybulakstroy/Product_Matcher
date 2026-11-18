@@ -19,6 +19,10 @@ from App.ocr.ocr_activity import preliminary_row_count, completed_text_rows, row
 from App.ocr.visual_sync import emit as emit_visual, raw_row as visual_raw_row, ready_cells
 from App.ocr.numeric_overlay import overlay_invalid_numeric_cells
 from App.ocr.receipt_rectification import rectify_table
+from App.ocr.ocr_performance import begin_profile, attempt_profile, finish_profile, measured, profiled_call
+from App.ocr.ocr_fast_path import fast_mode, try_fast_geometry, math_validates_fast_receipt
+from App.ocr.ocr_threads import configure_opencv, create_rapidocr
+# OCR_PROFILING_FASTPATH_V1
 from App.ocr.receipt_orientation_detector import orient_receipt
 from App.ocr.rotation_rectification import rotate_table_crop
 from App.ocr.ocr_catalog_eval import (ROOT, PASS_SIMILARITY, CatalogMatcher, aligned_lines,
@@ -31,6 +35,8 @@ from App.ocr.damaged_receipt_text import detect_damage_stripe, affected_name_row
 from App.ocr.full_grid_boundary import detect_full_grid_boundary
 from App.ocr.receipt_roi_recovery import recover_table_boundary, recover_compact_table
 from App.ocr.table_verification import verify_table_candidate
+from App.ocr.ocr_early_optimization import early_opt_enabled, early_opt_mode
+# OCR_LAZY_HEADER_PHASES_V1
 from App.ocr.receipt_editing import initialize_row, save_receipt, update_receipt, parse_number
 from App.ocr.manual_mappings import ManualMappings
 from App.ocr.quantity_cells import recover_quantities
@@ -99,6 +105,7 @@ class _ObservedCall:
 
 class ReceiptPipeline:
     def __init__(self, knowledge=None, *, split_product_rows=True):
+        configure_opencv()
         self.split_product_rows = split_product_rows
         self.knowledge = knowledge if knowledge is not None else ManualMappings()
         self.engine = None
@@ -150,10 +157,14 @@ class ReceiptPipeline:
                 articles=sorted({source["article"] for source in entry["sources"] if source["article"]})))
         return list(found.values())[:8]
 
-    def resources(self):
-        self.ensure_catalog()
+    def resources(self, job=None, *, load_catalog=True):
+        job = getattr(self, '_profile_job', None)
+        if load_catalog:
+            with measured(job, "startup.catalog_lookup"):
+                self.ensure_catalog()
         if self.engine is None:
-            self.engine = RapidOCR(rec_model_path=str(MODEL), rec_img_shape=[3, 48, 320], text_score=.3)
+            with measured(job, "startup.rapidocr_model_init"):
+                self.engine = create_rapidocr(RapidOCR, rec_model_path=str(MODEL), rec_img_shape=[3, 48, 320], text_score=.3)
 
     def recognize(self, path, job, target, progress, on_partial=None, row_boundaries=None):
         job.check_cancelled()
@@ -168,7 +179,10 @@ class ReceiptPipeline:
                 job.publish("boxes", target=target, boxes=boxes.tolist() if boxes is not None else [],
                             title="Обнаружены текстовые блоки", progress=progress)
 
-            self.engine.text_detector = _ObservedCall(detector, boxes_ready)
+            def timed_detector(*args, **kwargs):
+                with measured(job, "ocr.detector", target=target):
+                    return detector(*args, **kwargs)
+            self.engine.text_detector = _ObservedCall(timed_detector, boxes_ready)
             class StreamingRecognizer:
                 def __getattr__(self, name):
                     return getattr(recognizer, name)
@@ -181,7 +195,9 @@ class ReceiptPipeline:
                         emit_visual(job, 'scan_region', target=target,
                                     boxes=[np.asarray(box).tolist() for box in detected[start:start+size]])
                         try:
-                            batch, seconds = recognizer(images[start:start+size])
+                            with measured(job, "ocr.recognizer_batch", target=target,
+                                          batch_size=min(size, len(images)-start)):
+                                batch, seconds = recognizer(images[start:start+size])
                         finally:
                             emit_visual(job, 'scan_region_end', target=target)
                         job.check_cancelled()
@@ -192,7 +208,8 @@ class ReceiptPipeline:
                                             box_original=np.asarray(box).tolist())
                                        for box, (text, confidence) in zip(detected, results)
                                        if confidence >= self.engine.text_score]
-                            on_partial(partial, pending_boxes=detected[len(results):])
+                            with measured(job, "ui.streaming_row_parse", target=target):
+                                on_partial(partial, pending_boxes=detected[len(results):])
                             rows_done, rows_total = completed_text_rows(detected, len(results), row_boundaries) if row_boundaries is not None else (0, 0)
                             if rows_total:
                                 emit_status(job, "ocr", "Распознаём товары, количество и цены",
@@ -206,20 +223,56 @@ class ReceiptPipeline:
             self.engine.text_recognizer = StreamingRecognizer()
             try:
                 job.check_cancelled()
-                result, times = self.engine(str(path))
+                with measured(job, "ocr.full_image", target=target):
+                    result, times = self.engine(str(path))
                 job.check_cancelled()
             finally:
                 self.engine.text_detector, self.engine.text_recognizer = detector, recognizer
         return result or []
 
     def process(self, job):
+        started_all = perf_counter()
+        begin_profile(job, ROOT)
+        self._profile_job = job
+        status = "completed"
         try:
-            return self._process_attempt(job, orientation_mode="normal")
-        except _RetryOrientationAfterNoText:
-            job.publish("message", title="Текст или таблица не обнаружены; проверяем 4 поворота чека")
-            return self._process_attempt(job, orientation_mode="recovery")
+            try:
+                attempt_profile(job, "normal")
+                with measured(job, "attempt.normal"):
+                    result = self._process_attempt(job, orientation_mode="normal")
+            except _RetryOrientationAfterNoText:
+                job.publish("message", title="Текст или таблица не обнаружены; проверяем 4 поворота чека")
+                attempt_profile(job, "orientation_recovery")
+                with measured(job, "attempt.orientation_recovery"):
+                    result = self._process_attempt(job, orientation_mode="recovery", enable_fast_geometry=False)
+            # The first pass is provisional. A fast result is NEVER final if
+            # printed total, VAT or numeric cells fail validation.
+            if getattr(job, "_ocr_fast_selected", False) and not math_validates_fast_receipt(result):
+                job.publish("message", title="Fast Path: итог/НДС не подтверждены. Запускаем полную геометрию")
+                job.json_file("fast_path_first_pass.json", getattr(job, "_ocr_fast_report", {}))
+                attempt_profile(job, "full_geometry_retry")
+                with measured(job, "attempt.full_geometry_retry"):
+                    result = self._process_attempt(job, orientation_mode="normal", enable_fast_geometry=False)
+                result["ocr_fast_path"] = {"status": "fallback_full_geometry", "selected": False,
+                                           "reason": "final_math_or_numeric_validation_failed"}
+                result["elapsed_ms"] = round((perf_counter()-started_all)*1000)
+                save_receipt(job.directory, result)
+            elif getattr(job, "_ocr_fast_selected", False):
+                result["ocr_fast_path"] = dict(getattr(job, "_ocr_fast_report", {}),
+                                                final_math="verified")
+                result["elapsed_ms"] = round((perf_counter()-started_all)*1000)
+                save_receipt(job.directory, result)
+            return result
+        except BaseException:
+            cancelled = getattr(job, 'cancel_event', None)
+            status = "cancelled" if cancelled is not None and cancelled.is_set() else "exception"
+            raise
+        finally:
+            finish_profile(job, status)
+            self._profile_job = None
 
-    def _process_attempt(self, job, *, orientation_mode):
+    def _process_attempt(self, job, *, orientation_mode, enable_fast_geometry=True):
+        job._ocr_fast_selected = False
         job.check_cancelled()
         started = perf_counter()
         def read_numbers(images):
@@ -235,15 +288,17 @@ class ReceiptPipeline:
             return result
         job.phase("input", 5, "Подготавливаем фотографию")
         emit_status(job, "input", "Проверяем ориентацию и качество фотографии")
-        image, exif_rotated = decode_photo((job.directory / "upload.bin").read_bytes())
+        with measured(job, "input.decode_photo"):
+            image, exif_rotated = decode_photo((job.directory / "upload.bin").read_bytes())
         # Portrait normal mode is intentionally free: no orientation OCR and
         # no early model initialization. Landscape and recovery reuse RapidOCR.
         if orientation_mode == "recovery" or image.shape[0] < image.shape[1]:
-            self.resources()
-        image, orientation_info = orient_receipt(
-            image, engine=self.engine, ocr_lock=self.ocr_lock,
-            mode=orientation_mode,
-        )
+            self.resources(load_catalog=not early_opt_enabled())
+        with measured(job, "input.orient_receipt"):
+            image, orientation_info = orient_receipt(
+                image, engine=self.engine, ocr_lock=self.ocr_lock,
+                mode=orientation_mode,
+            )
         job.json_file(
             "orientation.json" if orientation_mode == "normal" else "orientation_recovery.json",
             orientation_info,
@@ -262,28 +317,36 @@ class ReceiptPipeline:
             f"статус: {orientation_info['status']}",
             role="original",
         )
-        job.phase("geometry", 13, "Ищем границы товарной таблицы")
-        boundary = detect_table_boundary(image)
-        boundary, paper_roi_report = recover_table_boundary(
-            image, detect_table_boundary, boundary, detect_full_grid_boundary,
-        )
+        job.phase("geometry", 13, "Ищем контур таблицы и область бумаги")
+        with measured(job, "geometry.detect_table_boundary"):
+            boundary = detect_table_boundary(image)
+        with measured(job, "geometry.paper_roi_recovery"):
+            boundary, paper_roi_report = recover_table_boundary(
+                image, detect_table_boundary, boundary, detect_full_grid_boundary,
+            )
         if paper_roi_report['status'] != 'not_needed':
             job.json_file("paper_roi_recovery.json", paper_roi_report)
             if paper_roi_report["status"] == "recovered":
                 job.publish("message", title="Товарная таблица найдена на узком чеке без повторного OCR",
                             progress=21)
+        job.phase("geometry", 20, "Проверяем печатную сетку таблицы")
         header_ocr_calls = 0
         def recognize_table_header(header):
             nonlocal header_ocr_calls
-            job.check_cancelled()
-            self.resources()
-            job.check_cancelled()
-            with self.ocr_lock:
-                header_ocr_calls += 1
-                return read_crop(header)
+            job.phase("geometry", 22, "OCR заголовка для подтверждения таблицы")
+            try:
+                job.check_cancelled()
+                self.resources(load_catalog=not early_opt_enabled())
+                job.check_cancelled()
+                with self.ocr_lock:
+                    header_ocr_calls += 1
+                    return read_crop(header)
+            finally:
+                job.phase("geometry", 22, "Завершаем проверку печатной сетки")
         emit_status(job, 'geometry', 'Проверяем сетку и заголовок таблицы',
                     details='Подтверждаем область перед распознаванием товаров')
-        verification = verify_table_candidate(image, boundary, recognize_table_header)
+        with measured(job, "geometry.verify_table_header"):
+            verification = verify_table_candidate(image, boundary, recognize_table_header)
         selection = dict(initial=verification, fallback=None)
         if verification['status'] == 'rejected':
             alternative, compact_report = recover_compact_table(
@@ -295,12 +358,15 @@ class ReceiptPipeline:
                 job.publish('message', title='Таблица найдена и проверена по заголовку и сетке', progress=22)
             elif verification['status'] == 'rejected':
                 boundary = dict(boundary, polygon=None)
-        boundary, grid_boundary_report = recover_printed_boundary(image, boundary, verification, recognize_table_header)
+        with measured(job, "geometry.recover_printed_boundary"):
+            boundary, grid_boundary_report = recover_printed_boundary(image, boundary, verification, recognize_table_header)
         job.json_file('printed_grid_boundary.json', grid_boundary_report)
         if grid_boundary_report['status'] == 'recovered':
             verification = grid_boundary_report['verification']
             selection['printed_grid_fallback'] = grid_boundary_report
-        selection.update(final=verification, header_ocr_calls=header_ocr_calls,
+        selection.update(early_opt_mode=early_opt_mode(),
+                         skipped_header_ocr=bool(verification.get("header_ocr_skipped")),
+                         final=verification, header_ocr_calls=header_ocr_calls,
                          existing_boundary_preserved=verification['status'] == 'uncertain')
         job.json_file('table_verification.json', selection)
         # Last geometry fallback: accept only observed five-column and
@@ -333,6 +399,7 @@ class ReceiptPipeline:
                 "Не удалось найти рамку таблицы после проверки ориентации. "
                 "Нужна ручная проверка снимка."
             )
+        job.phase("geometry", 26, "Готовим фотографии области таблицы")
         job.publish("contour", target="original", polygon=polygon.tolist(), title="Граница таблицы найдена", progress=24)
         emit_visual(job, "geometry_found", target="original", message="Контур таблицы найден")
         emit_status(job, "geometry", "Найдена товарная таблица", details="Определяем её границы")
@@ -348,32 +415,56 @@ class ReceiptPipeline:
         crop = image[lo[1]:hi[1], lo[0]:hi[0]]
         job.image("crop", crop, "Crop · область таблицы", "Отдельное изображение, исходное фото сохранено")
         job.publish("region", target="original", box=[lo.tolist(), [int(hi[0]), int(lo[1])], hi.tolist(), [int(lo[0]), int(hi[1])]], progress=29)
-        job.phase("geometry", 32, "Проверяем волны бумаги и выпрямляем таблицу")
-        if "partial_contour_replaced_by_full_grid_hypothesis" in boundary["warnings"]:
-            # A small angle (<2 degrees) is not an OCR failure. This branch
-            # must not terminate a valid receipt before geometric assessment.
-            try:
-                rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
-            except ValueError:
-                rectified, map_x, map_y, metadata = rectify_table(image, polygon, trust_top=True)
-        elif damage_grid_report.get('status') == 'recovered':
-            try:
-                rectified, map_x, map_y, metadata = rotate_table_crop(image, polygon)
-            except ValueError:
-                rectified, map_x, map_y, metadata = rectify_table(image, polygon, trust_top=True)
+        job.phase("geometry", 32, "Выпрямляем таблицу и сохраняем геометрию")
+        mode_fast = fast_mode(ROOT) if enable_fast_geometry else "off"
+        with measured(job, "geometry.fast_path_gate"):
+            fast_candidate, fast_report = try_fast_geometry(
+                image, polygon, mode=mode_fast, verification=verification, boundary=boundary,
+                orientation_mode=orientation_mode, paper_roi_report=paper_roi_report,
+                grid_boundary_report=grid_boundary_report, damage_grid_report=damage_grid_report,
+            )
+        if not enable_fast_geometry:
+            fast_report["reason"] = "full_geometry_retry_or_orientation_recovery"
+        job._ocr_fast_report = fast_report
+        job.json_file("fast_path.json", fast_report)
+        if fast_candidate is not None:
+            job._ocr_fast_selected = True
+            rectified, map_x, map_y, metadata = fast_candidate
+            source_grid_report = {"status": "skipped_verified_fast_path"}
+            perspective_2d_report = {"status": "skipped_verified_fast_path"}
+            printed_grid_report = {"status": "skipped_verified_fast_path"}
+            job.json_file("source_grid_columns.json", source_grid_report)
+            job.json_file("perspective_2d_grid_dewarp.json", perspective_2d_report)
+            job.json_file("printed_grid_rectification.json", printed_grid_report)
+            job.publish("message", title="Fast Path: печатная сетка подтверждена, сложный Dewarp пропущен", progress=36)
         else:
-            rectified, map_x, map_y, metadata = rectify_table(
-                image, polygon, trust_top=boundary["status"]=="detected")
-        (rectified, map_x, map_y, metadata), source_grid_report = preserve_source_columns(
-            image, polygon, rectified, map_x, map_y, metadata)
-        job.json_file('source_grid_columns.json', source_grid_report)
-        # PERSPECTIVE_2D_GRID_DEWARP_V1
-        (rectified, map_x, map_y, metadata), perspective_2d_report = maybe_refine_perspective_grid(
-            image, polygon, (rectified, map_x, map_y, metadata), output_dir=job.directory)
-        job.json_file('perspective_2d_grid_dewarp.json', perspective_2d_report)
-        (rectified, map_x, map_y, metadata), printed_grid_report = maybe_use_printed_grid(
-            image, (rectified, map_x, map_y, metadata), output_dir=job.directory)
-        job.json_file('printed_grid_rectification.json', printed_grid_report)
+            with measured(job, "geometry.full_rectification_stack"):
+                if "partial_contour_replaced_by_full_grid_hypothesis" in boundary["warnings"]:
+                    # A small angle (<2 degrees) is not an OCR failure. This branch
+                    # must not terminate a valid receipt before geometric assessment.
+                    try:
+                        rectified, map_x, map_y, metadata = profiled_call(job, "geometry.rotate_crop", rotate_table_crop, image, polygon)
+                    except ValueError:
+                        rectified, map_x, map_y, metadata = profiled_call(job, "geometry.contour_rectification", rectify_table, image, polygon, trust_top=True)
+                elif damage_grid_report.get('status') == 'recovered':
+                    try:
+                        rectified, map_x, map_y, metadata = profiled_call(job, "geometry.rotate_crop", rotate_table_crop, image, polygon)
+                    except ValueError:
+                        rectified, map_x, map_y, metadata = profiled_call(job, "geometry.contour_rectification", rectify_table, image, polygon, trust_top=True)
+                else:
+                    rectified, map_x, map_y, metadata = profiled_call(
+                        job, "geometry.contour_rectification", rectify_table,
+                        image, polygon, trust_top=boundary["status"]=="detected")
+                (rectified, map_x, map_y, metadata), source_grid_report = profiled_call(job, "geometry.source_columns", preserve_source_columns,
+                    image, polygon, rectified, map_x, map_y, metadata)
+                job.json_file('source_grid_columns.json', source_grid_report)
+                # PERSPECTIVE_2D_GRID_DEWARP_V1
+                (rectified, map_x, map_y, metadata), perspective_2d_report = profiled_call(job, "geometry.perspective_2d", maybe_refine_perspective_grid,
+                    image, polygon, (rectified, map_x, map_y, metadata), output_dir=job.directory)
+                job.json_file('perspective_2d_grid_dewarp.json', perspective_2d_report)
+                (rectified, map_x, map_y, metadata), printed_grid_report = profiled_call(job, "geometry.printed_grid", maybe_use_printed_grid,
+                    image, (rectified, map_x, map_y, metadata), output_dir=job.directory)
+                job.json_file('printed_grid_rectification.json', printed_grid_report)
         warnings.extend(metadata["warnings"])
         subtitle = {"wave_grid":"Выпрямлены волны по внутренней сетке; ячейка итога сохранена",
                     "grid_curvature_v2":"Выпрямлены изогнутые строки по V2-сетке; ячейка итога сохранена",
@@ -383,10 +474,12 @@ class ReceiptPipeline:
         emit_status(job, "geometry", "Выпрямляем таблицу", details=subtitle)
         job.image("rectified", rectified, "Rectify · рабочая таблица", subtitle)
         emit_visual(job, "geometry_ready", target="rectified", message="Таблица выпрямлена · готовим распознавание")
-        np.savez_compressed(job.directory / "rectification_map.npz", map_x=map_x, map_y=map_y)
+        with measured(job, "output.rectification_map_npz"):
+            np.savez_compressed(job.directory / "rectification_map.npz", map_x=map_x, map_y=map_y)
         job.json_file("rectification.json", metadata)
         job.phase("layout", 40, "Находим строки и столбцы")
-        layout = table_layout(rectified, metadata)
+        with measured(job, "layout.table_layout"):
+            layout = table_layout(rectified, metadata)
         if metadata.get('method') == 'printed_grid_rectified':
             from App.ocr.printed_grid_rectification import refine_printed_row_boundaries
             physical_columns = metadata['printed_grid_columns']
@@ -403,7 +496,8 @@ class ReceiptPipeline:
                              if estimated_rows else "Границы строк уточняются"))
         job.publish("cells", target="rectified", cells=grid_cells(layout), title="Предварительная разметка ячеек", progress=44)
         job.phase("ocr", 47, "Готовим локальный OCR и справочники")
-        self.resources()
+        with measured(job, "startup.resources"):
+            self.resources(load_catalog=not early_opt_enabled())
 
         # Header OCR is separate from the table. It cannot contaminate product rows.
         header_lines = []
@@ -484,23 +578,25 @@ class ReceiptPipeline:
             with self.ocr_lock:
                 job.check_cancelled()
                 return read_numbers(images)
-        rows, grid_first_report = reconstruct_rows(
-            rectified, layout, aligned, rows,
-            read_name=lambda crop: _grid_first_read_name(crop),
-            read_numeric=lambda images: _grid_first_read_numbers(images),
-            prefer_printed_bands=metadata.get('method') == 'source_grid_crop',
-            header_verified=verification.get('status') == 'confirmed',
-        )
+        with measured(job, "layout.grid_first_rows"):
+            rows, grid_first_report = reconstruct_rows(
+                rectified, layout, aligned, rows,
+                read_name=lambda crop: _grid_first_read_name(crop),
+                read_numeric=lambda images: _grid_first_read_numbers(images),
+                prefer_printed_bands=metadata.get('method') == 'source_grid_crop',
+                header_verified=verification.get('status') == 'confirmed',
+            )
         job.json_file('grid_first_rows.json', grid_first_report)
         if grid_first_report.get('strategy') == 'printed_grid':
             segmentation = 'verified_printed_grid_refinement'
         if grid_first_report['status'] == 'segmented_pending_numeric_check':
             job.publish('message', title=f"Товарные строки восстановлены по сетке: {len(rows)}; проверяем цифры", progress=75)
         # NUMBER_GUIDED_ROWS_V1_START: independent printed numbers + physical row bands.
-        rows, number_guided_report = refine_number_guided_rows(
-            rectified, layout, aligned, rows,
-            header_verified=verification.get('status') == 'confirmed',
-        )
+        with measured(job, "layout.number_guided_rows"):
+            rows, number_guided_report = refine_number_guided_rows(
+                rectified, layout, aligned, rows,
+                header_verified=verification.get('status') == 'confirmed',
+            )
         job.json_file('number_guided_rows.json', number_guided_report)
         if number_guided_report.get('selected'):
             segmentation = 'number_guided_verified_printed_grid'
@@ -513,7 +609,7 @@ class ReceiptPipeline:
         # The item grid is immutable here. Look separately on the SOURCE photo.
         def _read_source_footer(crop):
             job.check_cancelled()
-            self.resources()
+            self.resources(load_catalog=not early_opt_enabled())
             job.check_cancelled()
             with self.ocr_lock:
                 job.check_cancelled()
@@ -583,9 +679,10 @@ class ReceiptPipeline:
         recovered_receipt=None
         numeric_report=None
         try:
-            recovered_receipt,numeric_report=recover_numeric_receipt(
-                dict(rows=rows,total_raw=total),rectified,layout,aligned,
-                read_numbers,ocr_lock=self.ocr_lock)
+            with measured(job, "numeric.recover_numeric_receipt"):
+                recovered_receipt,numeric_report=recover_numeric_receipt(
+                    dict(rows=rows,total_raw=total),rectified,layout,aligned,
+                    read_numbers,ocr_lock=self.ocr_lock)
             rows,total=recovered_receipt['rows'],recovered_receipt['total_raw']
             if footer_total_report.get('selected') and total != footer_total_report['printed_candidate']:
                 # Independently sourced footer is preserved; log conflicts.
@@ -623,12 +720,13 @@ class ReceiptPipeline:
             damage_name_report = dict(status='diagnostic_error', detail=str(error)[:300], forced_rows=[])
         job.json_file('damaged_name_stripe.json', damage_name_report)
         try:
-            rows, text_recovery_report = recover_text_names(
-                rows, aligned, rectified, layout,
-                rapidocr=read_crop, ocr_lock=self.ocr_lock,
-                output_dir=job.directory / 'text_recovery',
-                force_rows=damage_forced_rows,
-            )
+            with measured(job, "ocr.selective_text_recovery"):
+                rows, text_recovery_report = recover_text_names(
+                    rows, aligned, rectified, layout,
+                    rapidocr=read_crop, ocr_lock=self.ocr_lock,
+                    output_dir=job.directory / 'text_recovery',
+                    force_rows=damage_forced_rows,
+                )
             job.json_file('selective_text_recovery.json', text_recovery_report)
             count = len(text_recovery_report['stage1_applied']) + len(text_recovery_report['stage2_applied'])
             if count:
@@ -660,27 +758,33 @@ class ReceiptPipeline:
                 emit_visual(job, "row_ready", row=visual_raw_row(complete_row))
         emit_visual(job, "rows_ready", message="Товарные строки собраны · значения предварительные")
         job.phase("matching", 81, "Сопоставляем товары со справочником")
+        if early_opt_enabled():
+            job.phase("matching", 81, "Загружаем справочник товаров")
+            with measured(job, "startup.catalog_lookup"):
+                self.ensure_catalog()
+            job.phase("matching", 81, "Сопоставляем товары со справочником")
         emit_visual(job, "matching", message="Сопоставляем товары с номенклатурой")
         total_products = sum(row.get("kind") == "product" for row in rows)
         matched_products = 0
         emit_status(job, "matching", "Сопоставляем товары со справочником",
                     details=f"Всего товаров: {total_products}")
-        for index, row in enumerate(rows):
-            row["match"] = self.matcher.match(row.get('name_recovered', row["name_raw"])) if row["kind"] == "product" else dict(status="excluded_"+row["kind"], best=None, top_matches=[])
-            row["ocr_name_confidence_pct"] = round(row["ocr_confidence"]*100, 2) if row["name_raw"].strip() else None
-            best = row["match"]["best"] or {}
-            row["articles"] = sorted({source["article"] for source in best.get("sources", []) if source["article"]})
-            row["similarity"] = best.get("score")
-            row["review_reason"] = review_reason(row)
-            row["needs_review"] = needs_review(dict(kind=row["kind"], status=row["match"]["status"],
-                                                    similarity=best.get("score", ""), articles="; ".join(row["articles"])))
-            row["stage"] = "matched"
-            initialize_row(row, PASS_SIMILARITY)
-            job.publish("row", row=row, progress=81+int(15*(index+1)/max(1, len(rows))), title=f"Обработана строка {index+1} из {len(rows)}")
-            if row["kind"] == "product":
-                matched_products += 1
-                emit_status(job, "matching", "Сопоставляем названия товаров",
-                            matched_products=matched_products, total_products=total_products)
+        with measured(job, "matching.catalog_all_rows"):
+            for index, row in enumerate(rows):
+                row["match"] = self.matcher.match(row.get('name_recovered', row["name_raw"])) if row["kind"] == "product" else dict(status="excluded_"+row["kind"], best=None, top_matches=[])
+                row["ocr_name_confidence_pct"] = round(row["ocr_confidence"]*100, 2) if row["name_raw"].strip() else None
+                best = row["match"]["best"] or {}
+                row["articles"] = sorted({source["article"] for source in best.get("sources", []) if source["article"]})
+                row["similarity"] = best.get("score")
+                row["review_reason"] = review_reason(row)
+                row["needs_review"] = needs_review(dict(kind=row["kind"], status=row["match"]["status"],
+                                                        similarity=best.get("score", ""), articles="; ".join(row["articles"])))
+                row["stage"] = "matched"
+                initialize_row(row, PASS_SIMILARITY)
+                job.publish("row", row=row, progress=81+int(15*(index+1)/max(1, len(rows))), title=f"Обработана строка {index+1} из {len(rows)}")
+                if row["kind"] == "product":
+                    matched_products += 1
+                    emit_status(job, "matching", "Сопоставляем названия товаров",
+                                matched_products=matched_products, total_products=total_products)
 
         header_text = "\n".join(line["text"] for line in header_lines)
         date = re.search(r"\b\d{2}[./]\d{2}[./]20\d{2}\b", header_text)
@@ -705,7 +809,8 @@ class ReceiptPipeline:
         job.phase('assemble',97,'Собираем электронный чек')
         emit_status(job, "check", "Проверяем цены, НДС и итог",
                     details="Вычисляем суммы по прочитанным строкам")
-        update_receipt(result)
+        with measured(job, "validation.final_total_vat"):
+            update_receipt(result)
         _, numeric_overlay_report = overlay_invalid_numeric_cells(rectified, result, layout, render=False, numeric_report=numeric_report)
         result['numeric_overlay'] = numeric_overlay_report
         job.json_file('rectified_numeric_overlay.json', numeric_overlay_report)

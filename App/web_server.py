@@ -26,6 +26,7 @@ from App.exchange import (ExchangeConflict, ExchangeError, ExchangeNotFound, Exc
                           contract, task_document)
 from App.exchange import multipart
 from App.ocr.web_pipeline import ReceiptPipeline
+# OCR_PROFILING_FASTPATH_V1: authorize per-job profiling artifact
 from App.ocr.receipt_editing import apply_edit, save_receipt, update_receipt
 from App.server_config import ServerSettings, server_settings
 from App.invoicing import invoice_service, catalog_1c, stock_sync
@@ -34,6 +35,7 @@ STATIC = Path(__file__).parent / "web"
 JOB_ID = re.compile(r"^[a-f0-9]{32}$")
 DOWNLOADS = {"receipt.json", "receipt.csv", "ocr_rectified.txt", "ocr_rectified.json", "ocr_header.json",
              "layout.json", "rectification.json", "rectification_map.npz", "quantity_cells.json", "numeric_split.json", "row_split.json", "upload.bin"}
+DOWNLOADS.add("performance_profile.json")
 
 
 class JobCancelled(Exception):

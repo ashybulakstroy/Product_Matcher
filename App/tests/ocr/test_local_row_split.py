@@ -102,7 +102,7 @@ def test_web_pipeline_applies_row_split_and_baseline_can_disable_it(tmp_path,mon
         pipeline=pipeline_module.ReceiptPipeline(split_product_rows=enabled)
         pipeline.matcher=SimpleNamespace(match=lambda text:dict(status='not_found',best=None,top_matches=[],gap=0))
         pipeline.catalog_count=0
-        monkeypatch.setattr(pipeline,'resources',lambda:None)
+        monkeypatch.setattr(pipeline,'resources',lambda **kwargs:None)
         monkeypatch.setattr(pipeline_module,'orient_receipt',lambda image,**kwargs:(image,{
             'status':'UNCERTAIN','rotation_clockwise':0}))
         total_box=[[400.,243.],[488.,243.],[488.,259.],[400.,259.]]

@@ -42,7 +42,7 @@ def server(tmp_path):
         job.json_file("receipt.json", result)
         return result
     instance = create_server("127.0.0.1", 0, tmp_path, process, max_upload=1024)
-    thread = threading.Thread(target=instance.serve_forever, daemon=True)
+    thread = threading.Thread(target=instance.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
     thread.start()
     yield instance, f"http://127.0.0.1:{instance.server_port}"
     instance.shutdown()

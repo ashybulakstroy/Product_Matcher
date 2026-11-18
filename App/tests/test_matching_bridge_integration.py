@@ -54,7 +54,7 @@ def bridge_server(tmp_path, monkeypatch):
         exchange.bind_job(task.task_id, identifier)
         jobs[database] = identifier
     instance = create_server('127.0.0.1', 0, output, processor=lambda job: None)
-    thread = threading.Thread(target=instance.serve_forever, daemon=True)
+    thread = threading.Thread(target=instance.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
     thread.start()
     yield instance, f'http://127.0.0.1:{instance.server_port}', jobs
     instance.shutdown()

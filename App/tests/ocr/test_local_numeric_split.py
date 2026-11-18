@@ -67,7 +67,7 @@ def test_web_pipeline_keeps_repaired_price_through_matching_and_saving(tmp_path,
     pipeline=pipeline_module.ReceiptPipeline()
     pipeline.matcher=SimpleNamespace(match=lambda text:dict(status='not_found',best=None,top_matches=[],gap=0))
     pipeline.catalog_count=0
-    monkeypatch.setattr(pipeline,'resources',lambda:None)
+    monkeypatch.setattr(pipeline,'resources',lambda **kwargs:None)
     monkeypatch.setattr(pipeline_module,'orient_receipt',lambda image,**kwargs:(image,{
         'status':'UNCERTAIN','rotation_clockwise':0}))
     total_box=[[560.,420.],[710.,420.],[710.,450.],[560.,450.]]

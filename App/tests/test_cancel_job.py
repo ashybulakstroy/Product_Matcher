@@ -29,7 +29,7 @@ class CancelJobHttpTests(unittest.TestCase):
 
     def _start(self, processor):
         self.server = create_server('127.0.0.1', 0, output_dir=Path(self.tmp.name), processor=processor)
-        self.server_thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.server_thread = threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
         self.server_thread.start()
 
     def _request(self, path, method='GET', body=None):

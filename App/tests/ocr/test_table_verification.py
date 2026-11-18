@@ -23,7 +23,8 @@ def table_image(scale=1):
 
 
 @pytest.mark.parametrize('scale', [.6, 1., 2.])
-def test_unreadable_header_can_be_confirmed_by_relative_grid(scale):
+def test_unreadable_header_can_be_confirmed_by_relative_grid(scale, monkeypatch):
+    monkeypatch.setenv('OCR_EARLY_OPT_MODE', 'off')
     image, boundary = table_image(scale)
     report = verify_table_candidate(image, boundary, lambda _: [])
     assert report['status'] == 'confirmed'
@@ -31,13 +32,36 @@ def test_unreadable_header_can_be_confirmed_by_relative_grid(scale):
     assert report['header']['state'] == 'unreadable_or_incomplete'
 
 
-def test_header_reader_failure_preserves_geometrically_valid_table():
+def test_header_reader_failure_preserves_geometrically_valid_table(monkeypatch):
+    monkeypatch.setenv('OCR_EARLY_OPT_MODE', 'off')
     image, boundary = table_image()
     def unavailable(_):
         raise RuntimeError('OCR unavailable')
     report = verify_table_candidate(image, boundary, unavailable)
     assert report['status'] == 'confirmed'
     assert report['header']['state'] == 'unavailable'
+
+
+def test_confirmed_grid_skips_header_ocr_in_select_mode(monkeypatch):
+    monkeypatch.setenv('OCR_EARLY_OPT_MODE', 'select')
+    monkeypatch.setenv('OCR_FAST_PATH_MODE', 'off')
+    image, boundary = table_image()
+    def unexpected(_):
+        raise AssertionError('Strong grid should not invoke header OCR')
+    report = verify_table_candidate(image, boundary, unexpected)
+    assert report['status'] == 'confirmed'
+    assert report['header']['state'] == 'skipped_geometry_confirmed'
+    assert report['header_ocr_skipped'] is True
+
+
+def test_geometry_fast_path_keeps_header_text_evidence(monkeypatch):
+    monkeypatch.setenv('OCR_EARLY_OPT_MODE', 'select')
+    monkeypatch.setenv('OCR_FAST_PATH_MODE', 'select')
+    image, boundary = table_image()
+    calls = []
+    report = verify_table_candidate(image, boundary, lambda _: calls.append(True) or [])
+    assert calls == [True]
+    assert report['header']['state'] == 'unreadable_or_incomplete'
 
 
 @pytest.mark.parametrize(('text', 'role'), [('Тауардың атауы', 'name'), ('Саны', 'quantity'),

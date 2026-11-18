@@ -15,7 +15,7 @@ def service(tmp_path):
     servers = []
     def start(processor):
         server = create_server('127.0.0.1', 0, tmp_path, processor=processor)
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread = threading.Thread(target=server.serve_forever, kwargs={'poll_interval': 0.05}, daemon=True)
         thread.start()
         servers.append((server, thread))
         return server, f'http://127.0.0.1:{server.server_port}'
